@@ -1,0 +1,16 @@
+# Local runtime data
+/var/
+/bin/
+
+# Frontend output
+/web/node_modules/
+/web/dist/
+/web/coverage/
+/web/playwright-report/
+/web/test-results/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp

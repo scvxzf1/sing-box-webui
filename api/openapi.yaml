@@ -1,0 +1,1428 @@
+openapi: 3.1.0
+info:
+  title: sing-box WebUI Local API
+  version: 0.1.0
+  description: Local loopback API for the sing-box WebUI control plane.
+servers:
+  - url: http://127.0.0.1:11872
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      responses:
+        '200':
+          description: The Web API process is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /api/v1/status:
+    get:
+      operationId: getStatus
+      responses:
+        '200':
+          description: Current control-plane component status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/traffic-policy:
+    get:
+      operationId: getTrafficPolicy
+      responses:
+        '200':
+          description: Persisted automatic download policy and its current runtime state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficPolicy'
+        default:
+          $ref: '#/components/responses/Error'
+    put:
+      operationId: updateTrafficPolicy
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTrafficPolicy'
+      responses:
+        '200':
+          description: Updated policy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficPolicy'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/events:
+    get:
+      operationId: streamEvents
+      responses:
+        '200':
+          description: Server-sent event stream. The first event is a snapshot.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/session:
+    get:
+      operationId: getSession
+      responses:
+        '200':
+          description: Browser session metadata for same-origin mutations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+  /api/v1/subscriptions:
+    get:
+      operationId: listSubscriptions
+      responses:
+        '200':
+          description: Stored subscriptions without credential material.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Subscription'
+    post:
+      operationId: createSubscription
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSubscription'
+      responses:
+        '201':
+          description: Subscription stored and initial fetch attempted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/subscriptions/{id}:
+    parameters:
+      - $ref: '#/components/parameters/SubscriptionID'
+    get:
+      operationId: getSubscription
+      responses:
+        '200':
+          description: Subscription and sanitized node list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+        default:
+          $ref: '#/components/responses/Error'
+    patch:
+      operationId: updateSubscription
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSubscription'
+      responses:
+        '200':
+          description: Updated subscription.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: deleteSubscription
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Subscription removed.
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/subscriptions/{id}/refresh:
+    parameters:
+      - $ref: '#/components/parameters/SubscriptionID'
+      - $ref: '#/components/parameters/CSRFToken'
+    post:
+      operationId: refreshSubscription
+      responses:
+        '200':
+          description: Refreshed subscription.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/subscriptions/{id}/activate:
+    parameters:
+      - $ref: '#/components/parameters/SubscriptionID'
+      - $ref: '#/components/parameters/CSRFToken'
+    post:
+      operationId: activateSubscription
+      responses:
+        '200':
+          description: Active subscription changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/subscriptions/{id}/selection:
+    parameters:
+      - $ref: '#/components/parameters/SubscriptionID'
+      - $ref: '#/components/parameters/CSRFToken'
+    put:
+      operationId: selectNode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [nodeId]
+              properties:
+                nodeId:
+                  type: string
+      responses:
+        '200':
+          description: Selected node changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/subscriptions/{id}/latency:
+    parameters:
+      - $ref: '#/components/parameters/SubscriptionID'
+      - $ref: '#/components/parameters/CSRFToken'
+    post:
+      operationId: testNodeLatency
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LatencyRequest'
+      responses:
+        '200':
+          description: End-to-end HTTPS delay results measured through temporary sing-box outbounds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LatencyResponse'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/pools:
+    get:
+      operationId: listNodePools
+      responses:
+        '200':
+          description: Stored cross-subscription node pools with live member resolution.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/NodePool'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      operationId: createNodePool
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateNodePool'
+      responses:
+        '201':
+          description: Node pool created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodePool'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/pools/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getNodePool
+      responses:
+        '200':
+          description: Node pool details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodePool'
+        default:
+          $ref: '#/components/responses/Error'
+    patch:
+      operationId: updateNodePool
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateNodePool'
+      responses:
+        '200':
+          description: Node pool updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodePool'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: deleteNodePool
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Node pool deleted.
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/runtime:
+    get:
+      operationId: getRuntime
+      responses:
+        '200':
+          description: Current proxy runtime and capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Runtime'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/rules:
+    get:
+      operationId: listRules
+      responses:
+        '200':
+          description: Manual, subscription, and built-in routing rules in evaluation order.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Rule'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      operationId: createRule
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRule'
+      responses:
+        '201':
+          description: Manual rule created and reloaded when the proxy is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Rule'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/rules/order:
+    put:
+      operationId: reorderRules
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuleOrder'
+      responses:
+        '200':
+          description: Manual rules reordered and reloaded when the proxy is running.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Rule'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/rules/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    patch:
+      operationId: updateRule
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRule'
+      responses:
+        '200':
+          description: Rule updated and reloaded when the proxy is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Rule'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: deleteRule
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Manual rule deleted and reloaded when the proxy is running.
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/rule-pools:
+    get:
+      operationId: listRulePools
+      responses:
+        '200':
+          description: Rule pools in evaluation order.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RulePool'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      operationId: createRulePool
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRulePool'
+      responses:
+        '201':
+          description: Rule pool created and reloaded when the proxy is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RulePool'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/rule-pools/order:
+    put:
+      operationId: reorderRulePools
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RulePoolOrder'
+      responses:
+        '200':
+          description: Rule pools reordered and reloaded when the proxy is running.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RulePool'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/rule-pools/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    patch:
+      operationId: updateRulePool
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRulePool'
+      responses:
+        '200':
+          description: Rule pool updated atomically and reloaded when the proxy is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RulePool'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: deleteRulePool
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Rule pool deleted and reloaded when the proxy is running.
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/runtime/apply:
+    post:
+      operationId: applyRuntime
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyRuntime'
+      responses:
+        '200':
+          description: Selected node or node pool and proxy mode applied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Runtime'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/runtime/stop:
+    post:
+      operationId: stopRuntime
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Proxy stopped and system proxy state restored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Runtime'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/core:
+    get:
+      operationId: getCore
+      responses:
+        '200':
+          description: Current managed or external sing-box core.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoreInfo'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/core/update:
+    post:
+      operationId: updateCore
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CoreUpdate'
+      responses:
+        '200':
+          description: Core release installed and activated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoreInfo'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/core/rollback:
+    post:
+      operationId: rollbackCore
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Previous installed core activated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoreInfo'
+        default:
+          $ref: '#/components/responses/Error'
+components:
+  parameters:
+    SubscriptionID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    CSRFToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema:
+        type: string
+  responses:
+    Error:
+      description: Structured API error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ok
+    Session:
+      type: object
+      additionalProperties: false
+      required: [csrfToken]
+      properties:
+        csrfToken:
+          type: string
+    ComponentStatus:
+      type: object
+      additionalProperties: false
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [healthy, unavailable, degraded, failed]
+        detail:
+          type: string
+    Status:
+      type: object
+      additionalProperties: false
+      required: [service, version, components, timestamp]
+      properties:
+        service:
+          type: string
+        version:
+          type: string
+        components:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ComponentStatus'
+        timestamp:
+          type: string
+          format: date-time
+    Node:
+      type: object
+      additionalProperties: false
+      required: [id, name, type, server, port, tls, selected]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        server:
+          type: string
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        tls:
+          type: boolean
+        selected:
+          type: boolean
+    Subscription:
+      type: object
+      additionalProperties: false
+      required: [id, name, url, autoUpdate, updateIntervalMinutes, active, nodeCount]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        url:
+          type: string
+        autoUpdate:
+          type: boolean
+        updateIntervalMinutes:
+          type: integer
+        active:
+          type: boolean
+        selectedNodeId:
+          type: string
+        lastUpdated:
+          type: string
+          format: date-time
+        lastError:
+          type: string
+        nodeCount:
+          type: integer
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/Node'
+    CreateSubscription:
+      type: object
+      additionalProperties: false
+      required: [name, url, autoUpdate, updateIntervalMinutes]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        url:
+          type: string
+          format: uri
+        autoUpdate:
+          type: boolean
+        updateIntervalMinutes:
+          type: integer
+          minimum: 15
+          maximum: 10080
+    UpdateSubscription:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        autoUpdate:
+          type: boolean
+        updateIntervalMinutes:
+          type: integer
+          minimum: 15
+          maximum: 10080
+    LatencyRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        nodeIds:
+          type: array
+          maxItems: 128
+          uniqueItems: true
+          items:
+            type: string
+    RuleCondition:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [domain, domain_suffix, domain_keyword, ip_cidr, ip_is_private, port, port_range, process_name, network, protocol]
+        values:
+          type: array
+          items:
+            type: string
+    Rule:
+      type: object
+      additionalProperties: false
+      required: [id, name, enabled, origin, action, supported, position]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        enabled:
+          type: boolean
+        origin:
+          type: string
+          enum: [builtin, manual, subscription]
+        subscriptionId:
+          type: string
+        subscriptionName:
+          type: string
+        conditions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuleCondition'
+        action:
+          type: string
+          enum: [proxy, direct, block]
+        supported:
+          type: boolean
+        unsupportedReason:
+          type: string
+        source:
+          type: string
+        position:
+          type: integer
+        locked:
+          type: boolean
+    CreateRule:
+      type: object
+      additionalProperties: false
+      required: [name, enabled, conditions, action]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        enabled:
+          type: boolean
+        conditions:
+          type: array
+          minItems: 1
+          maxItems: 8
+          items:
+            $ref: '#/components/schemas/RuleCondition'
+        action:
+          type: string
+          enum: [proxy, direct, block]
+    UpdateRule:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        enabled:
+          type: boolean
+        conditions:
+          type: array
+          minItems: 1
+          maxItems: 8
+          items:
+            $ref: '#/components/schemas/RuleCondition'
+        action:
+          type: string
+          enum: [proxy, direct, block]
+    RuleOrder:
+      type: object
+      additionalProperties: false
+      required: [ids]
+      properties:
+        ids:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+    PoolRule:
+      type: object
+      additionalProperties: false
+      required: [id, name, enabled, conditions, action, position]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        enabled:
+          type: boolean
+        conditions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuleCondition'
+        action:
+          type: string
+          enum: [proxy, direct, block]
+        position:
+          type: integer
+    RulePool:
+      type: object
+      additionalProperties: false
+      required: [id, name, enabled, position, rules]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        enabled:
+          type: boolean
+        position:
+          type: integer
+        rules:
+          type: array
+          maxItems: 512
+          items:
+            $ref: '#/components/schemas/PoolRule'
+    CreateRulePool:
+      type: object
+      additionalProperties: false
+      required: [name, enabled, rules]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        enabled:
+          type: boolean
+        rules:
+          type: array
+          maxItems: 512
+          items:
+            $ref: '#/components/schemas/CreateRule'
+    UpdateRulePool:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        enabled:
+          type: boolean
+        rules:
+          type: array
+          maxItems: 512
+          items:
+            $ref: '#/components/schemas/CreateRule'
+    RulePoolOrder:
+      type: object
+      additionalProperties: false
+      required: [ids]
+      properties:
+        ids:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+    LatencyResult:
+      type: object
+      additionalProperties: false
+      required: [nodeId, name, status]
+      properties:
+        nodeId:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [ok, timeout, failed]
+        latencyMs:
+          type: integer
+          minimum: 1
+        detail:
+          type: string
+    LatencyResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/LatencyResult'
+    NodePoolMemberRef:
+      type: object
+      additionalProperties: false
+      required: [subscriptionId, nodeId]
+      properties:
+        subscriptionId:
+          type: string
+        nodeId:
+          type: string
+    NodePoolMember:
+      type: object
+      additionalProperties: false
+      required: [subscriptionId, nodeId, available]
+      properties:
+        subscriptionId:
+          type: string
+        subscriptionName:
+          type: string
+        nodeId:
+          type: string
+        nodeName:
+          type: string
+        type:
+          type: string
+        server:
+          type: string
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        available:
+          type: boolean
+    NodePool:
+      type: object
+      additionalProperties: false
+      required: [id, name, members, memberCount, availableCount, probeIntervalSeconds, toleranceMs, probeUrl, fallbackProbeUrls, idleTimeoutSeconds, highLatencyThresholdMs, consecutiveFailures, recoverySuccesses, maxBackoffSeconds, interruptExistingConnections, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/NodePoolMember'
+        memberCount:
+          type: integer
+        availableCount:
+          type: integer
+        probeIntervalSeconds:
+          type: integer
+        toleranceMs:
+          type: integer
+        probeUrl:
+          type: string
+          format: uri
+        fallbackProbeUrls:
+          type: array
+          maxItems: 4
+          items:
+            type: string
+            format: uri
+        idleTimeoutSeconds:
+          type: integer
+        highLatencyThresholdMs:
+          type: integer
+        consecutiveFailures:
+          type: integer
+        recoverySuccesses:
+          type: integer
+        maxBackoffSeconds:
+          type: integer
+        interruptExistingConnections:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CreateNodePool:
+      type: object
+      additionalProperties: false
+      required: [name, members, probeIntervalSeconds, toleranceMs]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        members:
+          type: array
+          maxItems: 128
+          items:
+            $ref: '#/components/schemas/NodePoolMemberRef'
+        probeIntervalSeconds:
+          type: integer
+          minimum: 15
+          maximum: 3600
+        toleranceMs:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        probeUrl:
+          type: string
+          format: uri
+          maxLength: 2048
+        fallbackProbeUrls:
+          type: array
+          maxItems: 4
+          items:
+            type: string
+            format: uri
+            maxLength: 2048
+        idleTimeoutSeconds:
+          type: integer
+          minimum: 60
+          maximum: 86400
+        highLatencyThresholdMs:
+          type: integer
+          minimum: 100
+          maximum: 10000
+        consecutiveFailures:
+          type: integer
+          minimum: 1
+          maximum: 10
+        recoverySuccesses:
+          type: integer
+          minimum: 1
+          maximum: 10
+        maxBackoffSeconds:
+          type: integer
+          minimum: 15
+          maximum: 3600
+        interruptExistingConnections:
+          type: boolean
+    UpdateNodePool:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        members:
+          type: array
+          maxItems: 128
+          items:
+            $ref: '#/components/schemas/NodePoolMemberRef'
+        probeIntervalSeconds:
+          type: integer
+          minimum: 15
+          maximum: 3600
+        toleranceMs:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        probeUrl:
+          type: string
+          format: uri
+          maxLength: 2048
+        fallbackProbeUrls:
+          type: array
+          maxItems: 4
+          items:
+            type: string
+            format: uri
+            maxLength: 2048
+        idleTimeoutSeconds:
+          type: integer
+          minimum: 60
+          maximum: 86400
+        highLatencyThresholdMs:
+          type: integer
+          minimum: 100
+          maximum: 10000
+        consecutiveFailures:
+          type: integer
+          minimum: 1
+          maximum: 10
+        recoverySuccesses:
+          type: integer
+          minimum: 1
+          maximum: 10
+        maxBackoffSeconds:
+          type: integer
+          minimum: 15
+          maximum: 3600
+        interruptExistingConnections:
+          type: boolean
+    Capability:
+      type: object
+      additionalProperties: false
+      required: [available, detail]
+      properties:
+        available:
+          type: boolean
+        detail:
+          type: string
+    Capabilities:
+      type: object
+      additionalProperties: false
+      required: [singBox, systemProxy, tun]
+      properties:
+        singBox:
+          $ref: '#/components/schemas/Capability'
+        systemProxy:
+          $ref: '#/components/schemas/Capability'
+        tun:
+          $ref: '#/components/schemas/Capability'
+    PoolHealthMember:
+      type: object
+      additionalProperties: false
+      required: [subscriptionId, nodeId, name, status, failures]
+      properties:
+        subscriptionId:
+          type: string
+        nodeId:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [unknown, healthy, degraded, quarantined]
+        latencyMs:
+          type: integer
+        failures:
+          type: integer
+        lastCheckedAt:
+          type: string
+          format: date-time
+        nextProbeAt:
+          type: string
+          format: date-time
+    PoolHealth:
+      type: object
+      additionalProperties: false
+      required: [state, healthyCount, degradedCount, members, idle, uploadTotal, downloadTotal, connections]
+      properties:
+        state:
+          type: string
+          enum: [unknown, healthy, degraded, outage]
+        selectedNodeId:
+          type: string
+        selectedName:
+          type: string
+        healthyCount:
+          type: integer
+        degradedCount:
+          type: integer
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/PoolHealthMember'
+        lastCheckedAt:
+          type: string
+          format: date-time
+        lastError:
+          type: string
+        idle:
+          type: boolean
+        uploadTotal:
+          type: integer
+          format: int64
+        downloadTotal:
+          type: integer
+          format: int64
+        connections:
+          type: integer
+        trafficAt:
+          type: string
+          format: date-time
+    TrafficPolicyEvent:
+      type: object
+      additionalProperties: false
+      required: [timestamp, type, message]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        type:
+          type: string
+        message:
+          type: string
+    TrafficPolicy:
+      type: object
+      additionalProperties: false
+      required: [enabled, downloadPoolId, triggerRateBytesPerSecond, triggerDurationSeconds, releaseRateBytesPerSecond, releaseDurationSeconds, cooldownSeconds, state, currentDownloadBps, activeConnections, triggerProgressSeconds, releaseProgressSeconds, events]
+      properties:
+        enabled:
+          type: boolean
+        downloadPoolId:
+          type: string
+        triggerRateBytesPerSecond:
+          type: integer
+          format: int64
+        triggerDurationSeconds:
+          type: integer
+        releaseRateBytesPerSecond:
+          type: integer
+          format: int64
+        releaseDurationSeconds:
+          type: integer
+        cooldownSeconds:
+          type: integer
+        state:
+          type: string
+          enum: [disabled, waiting, monitoring, triggering, active, recovering, cooldown, error]
+        currentDownloadBps:
+          type: integer
+          format: int64
+        activeConnections:
+          type: integer
+        triggerProgressSeconds:
+          type: integer
+        releaseProgressSeconds:
+          type: integer
+        originalPoolId:
+          type: string
+        originalPoolName:
+          type: string
+        activatedAt:
+          type: string
+          format: date-time
+        cooldownUntil:
+          type: string
+          format: date-time
+        lastError:
+          type: string
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrafficPolicyEvent'
+    UpdateTrafficPolicy:
+      type: object
+      additionalProperties: false
+      required: [enabled, downloadPoolId, triggerRateBytesPerSecond, triggerDurationSeconds, releaseRateBytesPerSecond, releaseDurationSeconds, cooldownSeconds]
+      properties:
+        enabled:
+          type: boolean
+        downloadPoolId:
+          type: string
+        triggerRateBytesPerSecond:
+          type: integer
+          format: int64
+          minimum: 65536
+        triggerDurationSeconds:
+          type: integer
+          minimum: 2
+          maximum: 300
+        releaseRateBytesPerSecond:
+          type: integer
+          format: int64
+          minimum: 0
+        releaseDurationSeconds:
+          type: integer
+          minimum: 5
+          maximum: 3600
+        cooldownSeconds:
+          type: integer
+          minimum: 0
+          maximum: 86400
+    Runtime:
+      type: object
+      additionalProperties: false
+      required: [state, capabilities]
+      properties:
+        state:
+          type: string
+          enum: [stopped, starting, running, stopping, failed]
+        mode:
+          type: string
+          enum: [system-proxy, tun]
+        targetType:
+          type: string
+          enum: [node, pool]
+        subscriptionId:
+          type: string
+        nodeId:
+          type: string
+        nodeName:
+          type: string
+        poolId:
+          type: string
+        poolName:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        lastError:
+          type: string
+        capabilities:
+          $ref: '#/components/schemas/Capabilities'
+        poolHealth:
+          $ref: '#/components/schemas/PoolHealth'
+    ApplyRuntime:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      oneOf:
+        - required: [subscriptionId, nodeId]
+        - required: [poolId]
+      properties:
+        subscriptionId:
+          type: string
+        nodeId:
+          type: string
+        poolId:
+          type: string
+        mode:
+          type: string
+          enum: [system-proxy, tun]
+    CoreInfo:
+      type: object
+      additionalProperties: false
+      required: [source, currentVersion, embeddedVersion, updateSupported, platform]
+      properties:
+        source:
+          type: string
+          enum: [managed, external]
+        currentVersion:
+          type: string
+        previousVersion:
+          type: string
+        embeddedVersion:
+          type: string
+        updateSupported:
+          type: boolean
+        platform:
+          type: string
+    CoreUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        version:
+          type: string
+          pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+    ErrorDetail:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error, requestId]
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorDetail'
+        requestId:
+          type: string

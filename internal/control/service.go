@@ -1,0 +1,364 @@
+package control
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"net"
+	"sync"
+	"time"
+
+	"sing-box-webui/internal/configstore"
+	"sing-box-webui/internal/events"
+	"sing-box-webui/internal/nodepool"
+	"sing-box-webui/internal/platform/systemproxy"
+	"sing-box-webui/internal/poolhealth"
+	"sing-box-webui/internal/routing"
+	"sing-box-webui/internal/singbox"
+	"sing-box-webui/internal/subscription"
+	"sing-box-webui/internal/supervisor"
+)
+
+type Capability struct {
+	Available bool   `json:"available"`
+	Detail    string `json:"detail"`
+}
+
+type Capabilities struct {
+	SingBox     Capability `json:"singBox"`
+	SystemProxy Capability `json:"systemProxy"`
+	TUN         Capability `json:"tun"`
+}
+
+type Runtime struct {
+	State          supervisor.State     `json:"state"`
+	Mode           singbox.ProxyMode    `json:"mode,omitempty"`
+	TargetType     string               `json:"targetType,omitempty"`
+	SubscriptionID string               `json:"subscriptionId,omitempty"`
+	NodeID         string               `json:"nodeId,omitempty"`
+	NodeName       string               `json:"nodeName,omitempty"`
+	PoolID         string               `json:"poolId,omitempty"`
+	PoolName       string               `json:"poolName,omitempty"`
+	StartedAt      time.Time            `json:"startedAt,omitempty"`
+	LastError      string               `json:"lastError,omitempty"`
+	Capabilities   Capabilities         `json:"capabilities"`
+	PoolHealth     *poolhealth.Snapshot `json:"poolHealth,omitempty"`
+}
+
+type ApplyInput struct {
+	SubscriptionID string            `json:"subscriptionId,omitempty"`
+	NodeID         string            `json:"nodeId,omitempty"`
+	PoolID         string            `json:"poolId,omitempty"`
+	Mode           singbox.ProxyMode `json:"mode"`
+}
+
+type Service struct {
+	mu            sync.RWMutex
+	operationMu   sync.Mutex
+	subscriptions *subscription.Manager
+	pools         *nodepool.Manager
+	rules         *routing.Manager
+	client        *singbox.Client
+	configStore   *configstore.Store
+	supervisor    *supervisor.Manager
+	systemProxy   systemproxy.Controller
+	events        *events.Broker
+	tunEnabled    bool
+	mixedPort     uint16
+	runtime       Runtime
+	health        *poolhealth.Manager
+}
+
+type Config struct {
+	Subscriptions *subscription.Manager
+	Pools         *nodepool.Manager
+	Rules         *routing.Manager
+	Client        *singbox.Client
+	ConfigStore   *configstore.Store
+	Supervisor    *supervisor.Manager
+	SystemProxy   systemproxy.Controller
+	Events        *events.Broker
+	TUNEnabled    bool
+	MixedPort     uint16
+}
+
+func New(config Config) *Service {
+	return &Service{
+		subscriptions: config.Subscriptions,
+		pools:         config.Pools,
+		rules:         config.Rules,
+		client:        config.Client,
+		configStore:   config.ConfigStore,
+		supervisor:    config.Supervisor,
+		systemProxy:   config.SystemProxy,
+		events:        config.Events,
+		tunEnabled:    config.TUNEnabled,
+		mixedPort:     config.MixedPort,
+		runtime:       Runtime{State: supervisor.StateStopped},
+		health:        poolhealth.NewManager(),
+	}
+}
+
+func (s *Service) Status(ctx context.Context) Runtime {
+	s.mu.RLock()
+	runtime := s.runtime
+	s.mu.RUnlock()
+	if s.supervisor != nil {
+		snapshot := s.supervisor.Snapshot()
+		runtime.State = snapshot.State
+		if snapshot.LastError != "" {
+			runtime.LastError = snapshot.LastError
+		}
+	}
+	if runtime.TargetType == "pool" && s.health != nil {
+		health := s.health.Snapshot()
+		runtime.PoolHealth = &health
+	}
+	runtime.Capabilities = s.capabilities(ctx)
+	return runtime
+}
+
+func (s *Service) Apply(ctx context.Context, input ApplyInput) (Runtime, error) {
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	if input.Mode != singbox.ModeSystemProxy && input.Mode != singbox.ModeTUN {
+		return s.Status(ctx), fmt.Errorf("unsupported proxy mode")
+	}
+	if s.client == nil || s.configStore == nil || s.supervisor == nil {
+		return s.Status(ctx), fmt.Errorf("sing-box binary is not configured")
+	}
+	if input.Mode == singbox.ModeTUN && !s.tunEnabled {
+		return s.Status(ctx), fmt.Errorf("TUN mode is disabled until the sing-box binary has the required Linux capabilities")
+	}
+	if input.Mode == singbox.ModeSystemProxy {
+		available, detail := s.systemProxy.Available(ctx)
+		if !available {
+			return s.Status(ctx), fmt.Errorf("%s", detail)
+		}
+	}
+	routeRules := []map[string]any(nil)
+	if s.rules != nil {
+		var err error
+		routeRules, err = s.rules.Compiled()
+		if err != nil {
+			return s.Status(ctx), err
+		}
+	}
+
+	var content []byte
+	var target Runtime
+	var healthConfig *poolhealth.Config
+	var err error
+	if input.PoolID != "" {
+		if input.SubscriptionID != "" || input.NodeID != "" {
+			return s.Status(ctx), fmt.Errorf("poolId cannot be combined with subscriptionId or nodeId")
+		}
+		if s.pools == nil {
+			return s.Status(ctx), fmt.Errorf("node pool control is unavailable")
+		}
+		pool, members, nodes, resolveErr := s.pools.ResolveWithMembers(input.PoolID)
+		if resolveErr != nil {
+			return s.Status(ctx), resolveErr
+		}
+		controllerAddress, controllerSecret, controllerErr := reserveHealthController()
+		if controllerErr != nil {
+			return s.Status(ctx), controllerErr
+		}
+		content, err = singbox.BuildPoolConfigWithRules(nodes, input.Mode, s.mixedPort, singbox.URLTestOptions{
+			URL: pool.ProbeURL, Interval: time.Duration(pool.ProbeIntervalSeconds) * time.Second,
+			Tolerance: pool.ToleranceMS, IdleTimeout: time.Duration(pool.IdleTimeoutSeconds) * time.Second,
+			InterruptExistingConnections: pool.InterruptExistingConnections,
+			ControllerAddress:            controllerAddress, ControllerSecret: controllerSecret,
+		}, routeRules)
+		probeURLs := append([]string{pool.ProbeURL}, pool.FallbackProbeURLs...)
+		targets := make([]poolhealth.Target, len(nodes))
+		for index, node := range nodes {
+			targets[index] = poolhealth.Target{
+				Tag: singbox.PoolMemberTag(index), SubscriptionID: members[index].SubscriptionID,
+				NodeID: members[index].NodeID, Name: node.Name,
+			}
+		}
+		healthConfig = &poolhealth.Config{
+			Address: controllerAddress, Secret: controllerSecret, ProbeURLs: probeURLs,
+			Interval:             time.Duration(pool.ProbeIntervalSeconds) * time.Second,
+			Tolerance:            time.Duration(pool.ToleranceMS) * time.Millisecond,
+			IdleTimeout:          time.Duration(pool.IdleTimeoutSeconds) * time.Second,
+			HighLatencyThreshold: time.Duration(pool.HighLatencyThresholdMS) * time.Millisecond,
+			ConsecutiveFailures:  pool.ConsecutiveFailures, RecoverySuccesses: pool.RecoverySuccesses,
+			MaxBackoff: time.Duration(pool.MaxBackoffSeconds) * time.Second, Targets: targets,
+		}
+		target = Runtime{TargetType: "pool", PoolID: pool.ID, PoolName: pool.Name}
+	} else {
+		if input.SubscriptionID == "" || input.NodeID == "" {
+			return s.Status(ctx), fmt.Errorf("subscriptionId and nodeId are required for a node target")
+		}
+		subscriptionValue, node, resolveErr := s.subscriptions.SelectedNode(input.SubscriptionID, input.NodeID)
+		if resolveErr != nil {
+			return s.Status(ctx), resolveErr
+		}
+		if _, err := s.subscriptions.Activate(subscriptionValue.ID); err != nil {
+			return s.Status(ctx), err
+		}
+		if _, err := s.subscriptions.SelectNode(subscriptionValue.ID, node.ID); err != nil {
+			return s.Status(ctx), err
+		}
+		content, err = singbox.BuildConfigWithRules(node, input.Mode, s.mixedPort, routeRules)
+		target = Runtime{TargetType: "node", SubscriptionID: subscriptionValue.ID, NodeID: node.ID, NodeName: node.Name}
+	}
+	if err != nil {
+		return s.Status(ctx), err
+	}
+	expectedVersion := ""
+	if current, readErr := s.configStore.Read(); readErr == nil {
+		expectedVersion = current.Version
+	} else if !errors.Is(readErr, configstore.ErrNotFound) {
+		return s.Status(ctx), readErr
+	}
+	if _, err := s.configStore.Save(ctx, content, expectedVersion); err != nil {
+		return s.Status(ctx), err
+	}
+	if s.health != nil {
+		s.health.Stop()
+	}
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if s.supervisor.Snapshot().State == supervisor.StateRunning {
+		_, err = s.supervisor.Stop(stopCtx)
+	}
+	cancel()
+	if err != nil {
+		return s.recordFailure(ctx, err), err
+	}
+	if input.Mode != singbox.ModeSystemProxy {
+		_ = s.systemProxy.Restore(ctx)
+	}
+	if _, err := s.supervisor.Start(ctx, s.configStore.Path()); err != nil {
+		return s.recordFailure(ctx, err), err
+	}
+	if input.Mode == singbox.ModeSystemProxy {
+		if err := s.systemProxy.Apply(ctx, "127.0.0.1", s.mixedPort); err != nil {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, _ = s.supervisor.Stop(stopCtx)
+			cancel()
+			return s.recordFailure(ctx, err), err
+		}
+	}
+	if healthConfig != nil && s.health != nil {
+		if err := s.health.Start(*healthConfig); err != nil {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, _ = s.supervisor.Stop(stopCtx)
+			cancel()
+			return s.recordFailure(ctx, err), err
+		}
+	}
+
+	s.mu.Lock()
+	s.runtime = Runtime{
+		State: supervisor.StateRunning, Mode: input.Mode, TargetType: target.TargetType,
+		SubscriptionID: target.SubscriptionID, NodeID: target.NodeID, NodeName: target.NodeName,
+		PoolID: target.PoolID, PoolName: target.PoolName, StartedAt: time.Now().UTC(),
+	}
+	s.mu.Unlock()
+	s.publish("runtime.applied", map[string]string{"mode": string(input.Mode), "targetType": target.TargetType, "targetId": firstTargetID(target)})
+	return s.Status(ctx), nil
+}
+
+func (s *Service) ReapplyRules(ctx context.Context) (Runtime, error) {
+	runtime := s.Status(ctx)
+	if runtime.State != supervisor.StateRunning {
+		return runtime, nil
+	}
+	input := ApplyInput{Mode: runtime.Mode}
+	if runtime.TargetType == "pool" {
+		input.PoolID = runtime.PoolID
+	} else {
+		input.SubscriptionID = runtime.SubscriptionID
+		input.NodeID = runtime.NodeID
+	}
+	return s.Apply(ctx, input)
+}
+
+func (s *Service) Stop(ctx context.Context) (Runtime, error) {
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	if s.health != nil {
+		s.health.Stop()
+	}
+	if s.systemProxy != nil {
+		if err := s.systemProxy.Restore(ctx); err != nil {
+			return s.recordFailure(ctx, err), err
+		}
+	}
+	if s.supervisor != nil {
+		stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_, err := s.supervisor.Stop(stopCtx)
+		cancel()
+		if err != nil {
+			return s.recordFailure(ctx, err), err
+		}
+	}
+	s.mu.Lock()
+	s.runtime = Runtime{State: supervisor.StateStopped}
+	s.mu.Unlock()
+	s.publish("runtime.stopped", map[string]string{"state": "stopped"})
+	return s.Status(ctx), nil
+}
+
+func reserveHealthController() (string, string, error) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		return "", "", fmt.Errorf("reserve health controller: %w", err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		return "", "", fmt.Errorf("release health controller reservation: %w", err)
+	}
+	var secretBytes [24]byte
+	if _, err := rand.Read(secretBytes[:]); err != nil {
+		return "", "", fmt.Errorf("generate health controller secret: %w", err)
+	}
+	return address, hex.EncodeToString(secretBytes[:]), nil
+}
+
+func firstTargetID(runtime Runtime) string {
+	if runtime.PoolID != "" {
+		return runtime.PoolID
+	}
+	return runtime.NodeID
+}
+
+func (s *Service) capabilities(ctx context.Context) Capabilities {
+	capabilities := Capabilities{
+		SingBox: Capability{Available: s.client != nil, Detail: "sing-box 核心不可用"},
+		TUN:     Capability{Available: s.client != nil && s.tunEnabled, Detail: "设置 SING_BOX_WEBUI_ENABLE_TUN=1 后启用"},
+	}
+	if capabilities.SingBox.Available {
+		capabilities.SingBox.Detail = "sing-box 可执行文件可用"
+	}
+	if capabilities.TUN.Available {
+		capabilities.TUN.Detail = "TUN 已显式启用；运行仍取决于 sing-box 文件能力"
+	}
+	if s.systemProxy != nil {
+		capabilities.SystemProxy.Available, capabilities.SystemProxy.Detail = s.systemProxy.Available(ctx)
+	} else {
+		capabilities.SystemProxy.Detail = "系统代理适配器不可用"
+	}
+	return capabilities
+}
+
+func (s *Service) recordFailure(ctx context.Context, err error) Runtime {
+	s.mu.Lock()
+	s.runtime.State = supervisor.StateFailed
+	s.runtime.LastError = err.Error()
+	s.mu.Unlock()
+	s.publish("runtime.failed", map[string]string{"error": err.Error()})
+	return s.Status(ctx)
+}
+
+func (s *Service) publish(eventType string, payload any) {
+	if s.events != nil {
+		_, _ = s.events.Publish(eventType, payload)
+	}
+}
