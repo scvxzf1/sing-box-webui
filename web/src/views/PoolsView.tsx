@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, ArrowRight, Gauge, Layers3, LoaderCircle, Plus, Save, Settings2, Trash2, X } from 'lucide-react'
 import { createNodePool, deleteNodePool, listNodePools, testNodeLatency, updateNodePool } from '../api/client'
@@ -55,6 +55,9 @@ export function PoolsView() {
   const [testingAll, setTestingAll] = useState(false)
   const [latencyError, setLatencyError] = useState<unknown>(null)
   const [gridColumns, setGridColumns] = useState<PoolGridColumns>(readPoolGridColumns)
+  // Tracks which pool (or the create form) the editor fields currently mirror.
+  // Background refetches must not clobber unsaved edits for the same pool.
+  const syncedFormKeyRef = useRef('')
 
   const poolsQuery = useQuery({ queryKey: ['pools'], queryFn: ({ signal }) => listNodePools(signal) })
   const selectedPool = poolsQuery.data?.find((pool) => pool.id === selectedPoolId)
@@ -68,6 +71,8 @@ export function PoolsView() {
 
   useEffect(() => {
     if (creating || !selectedPool) return
+    if (syncedFormKeyRef.current === selectedPool.id) return
+    syncedFormKeyRef.current = selectedPool.id
     setName(selectedPool.name)
     setInterval(selectedPool.probeIntervalSeconds)
     setTolerance(selectedPool.toleranceMs)
@@ -94,6 +99,7 @@ export function PoolsView() {
   }, [gridColumns])
 
   const resetForCreate = () => {
+    syncedFormKeyRef.current = '__create__'
     setCreating(true)
     setSelectedPoolId('')
     setName('')
@@ -133,6 +139,7 @@ export function PoolsView() {
       return creating ? createNodePool(input) : updateNodePool(selectedPoolId, input)
     },
     onSuccess: async (pool) => {
+      syncedFormKeyRef.current = ''
       setCreating(false)
       setSelectedPoolId(pool.id)
       await invalidate()
@@ -145,6 +152,12 @@ export function PoolsView() {
       await invalidate()
     },
   })
+  useEffect(() => {
+    saveMutation.reset()
+    deleteMutation.reset()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPoolId, creating])
+
   const testMembers = async (targets: PoolMember[]) => {
     const targetKeys = targets.map((member) => memberKey(member.subscriptionId, member.nodeId))
     const grouped = new Map<string, string[]>()

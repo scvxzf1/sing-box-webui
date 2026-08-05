@@ -64,7 +64,7 @@ test('navigates subscription, node and connection workflows', async ({ page }) =
 
   await page.getByRole('button', { name: '连接' }).click()
   await expect(page.getByRole('heading', { name: '连接与应用' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '应用并连接' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '开启' })).toBeDisabled()
   await expect(page.getByText('sing-box 核心不可用')).toBeVisible()
 })
 
@@ -231,7 +231,7 @@ test('builds a cross-subscription pool and selects it as connection target', asy
   await page.locator('.connection-main').getByRole('button', { name: '节点池' }).click()
   await expect(page.getByLabel('选择节点池')).toHaveValue('pool-1')
   await expect(page.getByText('2/2 个成员可用 · 每 60 秒探测')).toBeVisible()
-  await expect(page.getByRole('button', { name: '应用并连接' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: '开启' })).toBeEnabled()
 
   for (const viewport of [{ width: 1366, height: 768 }, { width: 390, height: 844 }]) {
     await page.setViewportSize(viewport)

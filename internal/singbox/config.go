@@ -21,6 +21,11 @@ type URLTestOptions struct {
 	ControllerSecret             string
 }
 
+type ControllerOptions struct {
+	Address string
+	Secret  string
+}
+
 type ProxyMode string
 
 const (
@@ -33,8 +38,17 @@ func BuildConfig(node subscription.Node, mode ProxyMode, mixedPort uint16) ([]by
 }
 
 func BuildConfigWithRules(node subscription.Node, mode ProxyMode, mixedPort uint16, routeRules []map[string]any) ([]byte, error) {
+	return BuildConfigWithController(node, mode, mixedPort, routeRules, ControllerOptions{})
+}
+
+// BuildConfigWithController builds a single-node config, optionally exposing the
+// Clash API so the control plane can inspect live connections and traffic.
+func BuildConfigWithController(node subscription.Node, mode ProxyMode, mixedPort uint16, routeRules []map[string]any, controller ControllerOptions) ([]byte, error) {
 	if mode != ModeSystemProxy && mode != ModeTUN {
 		return nil, fmt.Errorf("unsupported proxy mode %q", mode)
+	}
+	if (controller.Address == "") != (controller.Secret == "") {
+		return nil, fmt.Errorf("controller address and secret must be configured together")
 	}
 	outbound, err := buildOutbound(node, "proxy")
 	if err != nil {
@@ -78,7 +92,18 @@ func BuildConfigWithRules(node subscription.Node, mode ProxyMode, mixedPort uint
 			"rules":                 routeRules,
 		},
 	}
+	if controller.Address != "" {
+		config["experimental"] = clashAPIConfig(controller.Address, controller.Secret)
+	}
 	return json.MarshalIndent(config, "", "  ")
+}
+
+func clashAPIConfig(address, secret string) map[string]any {
+	return map[string]any{"clash_api": map[string]any{
+		"external_controller":         address,
+		"secret":                      secret,
+		"access_control_allow_origin": []string{"http://127.0.0.1"},
+	}}
 }
 
 func BuildPoolConfig(nodes []subscription.Node, mode ProxyMode, mixedPort uint16, options URLTestOptions) ([]byte, error) {
@@ -151,11 +176,7 @@ func BuildPoolConfigWithRules(nodes []subscription.Node, mode ProxyMode, mixedPo
 		"route":     map[string]any{"auto_detect_interface": true, "final": "proxy", "rules": routeRules},
 	}
 	if options.ControllerAddress != "" {
-		config["experimental"] = map[string]any{"clash_api": map[string]any{
-			"external_controller":         options.ControllerAddress,
-			"secret":                      options.ControllerSecret,
-			"access_control_allow_origin": []string{"http://127.0.0.1"},
-		}}
+		config["experimental"] = clashAPIConfig(options.ControllerAddress, options.ControllerSecret)
 	}
 	return json.MarshalIndent(config, "", "  ")
 }

@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react'
-import { Activity } from 'lucide-react'
+import { LogOut } from 'lucide-react'
+import { AUTH_REQUIRED_EVENT, getAuthSession, logout } from './api/client'
+import { LoginView } from './components/LoginView'
 import { Navigation, type ViewName } from './components/Navigation'
 import { ThemeToggle } from './components/ThemeToggle'
 import { useEventStream } from './hooks/useEventStream'
 import { ConnectionView } from './views/ConnectionView'
 import { CoreView } from './views/CoreView'
+import { LinksView } from './views/LinksView'
 import { NodesView } from './views/NodesView'
 import { OverviewView } from './views/OverviewView'
 import { PoolsView } from './views/PoolsView'
@@ -14,6 +17,23 @@ import { TrafficPolicyView } from './views/TrafficPolicyView'
 import './App.css'
 
 function App() {
+  const [authState, setAuthState] = useState<'checking' | 'authenticated' | 'anonymous'>('checking')
+
+  useEffect(() => {
+    void getAuthSession().then(() => setAuthState('authenticated')).catch(() => setAuthState('anonymous'))
+    const requireAuth = () => setAuthState('anonymous')
+    window.addEventListener(AUTH_REQUIRED_EVENT, requireAuth)
+    return () => window.removeEventListener(AUTH_REQUIRED_EVENT, requireAuth)
+  }, [])
+
+  if (authState !== 'authenticated') {
+    return <LoginView checking={authState === 'checking'} onAuthenticated={() => setAuthState('authenticated')} />
+  }
+
+  return <AuthenticatedApp onLogout={() => setAuthState('anonymous')} />
+}
+
+function AuthenticatedApp({ onLogout }: { onLogout: () => void }) {
   const [view, setView] = useState<ViewName>(() => viewFromHash(window.location.hash))
   const eventStream = useEventStream('/api/v1/events')
 
@@ -28,12 +48,16 @@ function App() {
     window.history.replaceState(null, '', nextView === 'overview' ? '#overview' : `#${nextView}`)
   }
 
+  const signOut = async () => {
+    try { await logout() } finally { onLogout() }
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true">
-            <Activity size={18} strokeWidth={2.2} />
+            <img src="/brand-mark.svg" alt="" />
           </span>
           <span>sing-box WebUI</span>
         </div>
@@ -43,6 +67,7 @@ function App() {
             127.0.0.1:11872
           </div>
           <ThemeToggle />
+          <button className="icon-button" type="button" title="退出登录" aria-label="退出登录" onClick={() => void signOut()}><LogOut size={16} /></button>
         </div>
       </header>
       <div className="workspace">
@@ -56,6 +81,7 @@ function App() {
             {view === 'rules' && <RulesView />}
             {view === 'traffic' && <TrafficPolicyView />}
             {view === 'connection' && <ConnectionView />}
+            {view === 'links' && <LinksView />}
             {view === 'core' && <CoreView />}
           </div>
         </main>
@@ -66,7 +92,7 @@ function App() {
 
 function viewFromHash(hash: string): ViewName {
   const value = hash.replace(/^#/, '')
-  return value === 'subscriptions' || value === 'nodes' || value === 'pools' || value === 'rules' || value === 'traffic' || value === 'connection' || value === 'core'
+  return value === 'subscriptions' || value === 'nodes' || value === 'pools' || value === 'rules' || value === 'traffic' || value === 'connection' || value === 'links' || value === 'core'
     ? value
     : 'overview'
 }

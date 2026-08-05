@@ -3,8 +3,26 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f3f5f4" />
-    <title>sing-box WebUI</title>
+    <meta name="theme-color" content="#eef1f3" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0a0f0d" media="(prefers-color-scheme: dark)" />
+    <meta name="description" content="sing-box 本机控制面：订阅、节点池、路由规则与流量策略管理" />
+    <link rel="icon" type="image/svg+xml" href="/brand-mark.svg" />
+    <script>
+      // Apply the stored or system theme before first paint to avoid a flash.
+      ;(() => {
+        let theme = null
+        try {
+          theme = window.localStorage.getItem('sing-box-webui:theme')
+        } catch {
+          theme = null
+        }
+        if (theme !== 'light' && theme !== 'dark') {
+          theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+        }
+        document.documentElement.dataset.theme = theme
+      })()
+    </script>
+    <title>sing-box WebUI · 本机代理控制面</title>
   </head>
   <body>
     <div id="root"></div>

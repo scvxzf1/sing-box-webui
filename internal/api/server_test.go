@@ -58,6 +58,51 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+func TestWebAuthentication(t *testing.T) {
+	t.Parallel()
+	server, err := NewServer(ServerConfig{
+		Address: "127.0.0.1:11872", DevOrigin: "http://127.0.0.1:5173", WebToken: "test-token-with-32-characters-value",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:11872/api/v1/session", nil)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated session status = %d, want 401", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "http://127.0.0.1:11872/api/v1/auth/login", strings.NewReader(`{"token":"wrong-token-value"}`))
+	request.Header.Set("Origin", "http://127.0.0.1:5173")
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid login status = %d, want 401", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "http://127.0.0.1:11872/api/v1/auth/login", strings.NewReader(`{"token":"test-token-with-32-characters-value"}`))
+	request.Header.Set("Origin", "http://127.0.0.1:5173")
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || len(response.Result().Cookies()) != 1 {
+		t.Fatalf("login status = %d cookies=%d body=%s", response.Code, len(response.Result().Cookies()), response.Body.String())
+	}
+	cookie := response.Result().Cookies()[0]
+	if !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("session cookie flags: HttpOnly=%v SameSite=%v", cookie.HttpOnly, cookie.SameSite)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "http://127.0.0.1:11872/api/v1/session", nil)
+	request.AddCookie(cookie)
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("authenticated session status = %d, want 200", response.Code)
+	}
+}
+
 func TestRejectsUnexpectedHostAndOrigin(t *testing.T) {
 	t.Parallel()
 	server := newTestServer(t)

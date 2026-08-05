@@ -192,7 +192,25 @@ export function RulesView() {
     ?? poolSaveMutation.error ?? poolToggleMutation.error ?? poolDeleteMutation.error ?? poolOrderMutation.error
     ?? poolRulesMutation.error ?? poolRuleSaveMutation.error ?? poolRuleTextSaveMutation.error
 
+  useEffect(() => {
+    saveMutation.reset()
+    textSaveMutation.reset()
+    toggleMutation.reset()
+    deleteMutation.reset()
+    orderMutation.reset()
+    poolSaveMutation.reset()
+    poolTextSaveMutation.reset()
+    poolToggleMutation.reset()
+    poolDeleteMutation.reset()
+    poolOrderMutation.reset()
+    poolRulesMutation.reset()
+    poolRuleSaveMutation.reset()
+    poolRuleTextSaveMutation.reset()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, activeRuleGroup])
+
   const openEditor = (rule?: Rule) => {
+    saveMutation.reset()
     setDraft(rule ? {
       id: rule.id, name: rule.name, enabled: rule.enabled, action: rule.action,
       conditions: (rule.conditions ?? []).map((condition) => ({

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"sing-box-webui/internal/configstore"
+	"sing-box-webui/internal/connmon"
 	"sing-box-webui/internal/events"
 	"sing-box-webui/internal/nodepool"
 	"sing-box-webui/internal/platform/systemproxy"
@@ -69,6 +70,7 @@ type Service struct {
 	mixedPort     uint16
 	runtime       Runtime
 	health        *poolhealth.Manager
+	connmon       *connmon.Monitor
 }
 
 type Config struct {
@@ -98,6 +100,7 @@ func New(config Config) *Service {
 		mixedPort:     config.MixedPort,
 		runtime:       Runtime{State: supervisor.StateStopped},
 		health:        poolhealth.NewManager(),
+		connmon:       connmon.New(nil),
 	}
 }
 
@@ -150,6 +153,8 @@ func (s *Service) Apply(ctx context.Context, input ApplyInput) (Runtime, error) 
 	var content []byte
 	var target Runtime
 	var healthConfig *poolhealth.Config
+	var connResolver connmon.Resolver
+	var controllerAddress, controllerSecret string
 	var err error
 	if input.PoolID != "" {
 		if input.SubscriptionID != "" || input.NodeID != "" {
@@ -162,10 +167,11 @@ func (s *Service) Apply(ctx context.Context, input ApplyInput) (Runtime, error) 
 		if resolveErr != nil {
 			return s.Status(ctx), resolveErr
 		}
-		controllerAddress, controllerSecret, controllerErr := reserveHealthController()
+		addr, secret, controllerErr := reserveHealthController()
 		if controllerErr != nil {
 			return s.Status(ctx), controllerErr
 		}
+		controllerAddress, controllerSecret = addr, secret
 		content, err = singbox.BuildPoolConfigWithRules(nodes, input.Mode, s.mixedPort, singbox.URLTestOptions{
 			URL: pool.ProbeURL, Interval: time.Duration(pool.ProbeIntervalSeconds) * time.Second,
 			Tolerance: pool.ToleranceMS, IdleTimeout: time.Duration(pool.IdleTimeoutSeconds) * time.Second,
@@ -174,12 +180,16 @@ func (s *Service) Apply(ctx context.Context, input ApplyInput) (Runtime, error) 
 		}, routeRules)
 		probeURLs := append([]string{pool.ProbeURL}, pool.FallbackProbeURLs...)
 		targets := make([]poolhealth.Target, len(nodes))
+		namesByTag := make(map[string]string, len(nodes))
 		for index, node := range nodes {
+			tag := singbox.PoolMemberTag(index)
 			targets[index] = poolhealth.Target{
-				Tag: singbox.PoolMemberTag(index), SubscriptionID: members[index].SubscriptionID,
+				Tag: tag, SubscriptionID: members[index].SubscriptionID,
 				NodeID: members[index].NodeID, Name: node.Name,
 			}
+			namesByTag[tag] = node.Name
 		}
+		connResolver = poolChainResolver(namesByTag)
 		healthConfig = &poolhealth.Config{
 			Address: controllerAddress, Secret: controllerSecret, ProbeURLs: probeURLs,
 			Interval:             time.Duration(pool.ProbeIntervalSeconds) * time.Second,
@@ -204,7 +214,15 @@ func (s *Service) Apply(ctx context.Context, input ApplyInput) (Runtime, error) 
 		if _, err := s.subscriptions.SelectNode(subscriptionValue.ID, node.ID); err != nil {
 			return s.Status(ctx), err
 		}
-		content, err = singbox.BuildConfigWithRules(node, input.Mode, s.mixedPort, routeRules)
+		addr, secret, controllerErr := reserveHealthController()
+		if controllerErr != nil {
+			return s.Status(ctx), controllerErr
+		}
+		controllerAddress, controllerSecret = addr, secret
+		content, err = singbox.BuildConfigWithController(node, input.Mode, s.mixedPort, routeRules, singbox.ControllerOptions{
+			Address: controllerAddress, Secret: controllerSecret,
+		})
+		connResolver = nodeChainResolver(node.Name)
 		target = Runtime{TargetType: "node", SubscriptionID: subscriptionValue.ID, NodeID: node.ID, NodeName: node.Name}
 	}
 	if err != nil {
@@ -253,6 +271,9 @@ func (s *Service) Apply(ctx context.Context, input ApplyInput) (Runtime, error) 
 			return s.recordFailure(ctx, err), err
 		}
 	}
+	if s.connmon != nil && controllerAddress != "" {
+		s.connmon.Start(controllerAddress, controllerSecret, connResolver)
+	}
 
 	s.mu.Lock()
 	s.runtime = Runtime{
@@ -286,6 +307,9 @@ func (s *Service) Stop(ctx context.Context) (Runtime, error) {
 	if s.health != nil {
 		s.health.Stop()
 	}
+	if s.connmon != nil {
+		s.connmon.Stop()
+	}
 	if s.systemProxy != nil {
 		if err := s.systemProxy.Restore(ctx); err != nil {
 			return s.recordFailure(ctx, err), err
@@ -304,6 +328,67 @@ func (s *Service) Stop(ctx context.Context) (Runtime, error) {
 	s.mu.Unlock()
 	s.publish("runtime.stopped", map[string]string{"state": "stopped"})
 	return s.Status(ctx), nil
+}
+
+// Links returns the live connection monitor so the API layer can query it.
+func (s *Service) Links() *connmon.Monitor {
+	return s.connmon
+}
+
+// ProxyAddress reports the loopback mixed-inbound address (host:port) that
+// connectivity checks can route through, or an empty string when the proxy is
+// not listening on a local port (stopped, or running in TUN mode where the
+// tunnel already intercepts all traffic system-wide).
+func (s *Service) ProxyAddress() string {
+	s.mu.RLock()
+	running := s.runtime.State == supervisor.StateRunning
+	mode := s.runtime.Mode
+	s.mu.RUnlock()
+	if !running || mode != singbox.ModeSystemProxy || s.mixedPort == 0 {
+		return ""
+	}
+	return net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", s.mixedPort))
+}
+
+// ProxyRunning reports whether diagnostics can be attributed to the current
+// runtime. System-proxy mode uses ProxyAddress; TUN mode intercepts the direct
+// diagnostic request system-wide.
+func (s *Service) ProxyRunning() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.runtime.State == supervisor.StateRunning
+}
+
+// poolChainResolver resolves an expanded connection chain to the pool member
+// that carried it. The monitor expands group tags (auto/proxy) to the selected
+// member tag, so the first member tag present wins.
+func poolChainResolver(namesByTag map[string]string) connmon.Resolver {
+	return func(chains []string) string {
+		for _, chain := range chains {
+			if name, ok := namesByTag[chain]; ok {
+				return name
+			}
+		}
+		return ""
+	}
+}
+
+// nodeChainResolver maps every proxied connection to the single selected node.
+// Direct and blocked outbounds are surfaced separately for clarity.
+func nodeChainResolver(nodeName string) connmon.Resolver {
+	return func(chains []string) string {
+		for _, chain := range chains {
+			switch chain {
+			case "direct":
+				return "direct"
+			case "block":
+				return "block"
+			case "proxy":
+				return nodeName
+			}
+		}
+		return ""
+	}
 }
 
 func reserveHealthController() (string, string, error) {

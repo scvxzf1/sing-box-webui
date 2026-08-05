@@ -6,6 +6,7 @@ import type {
   ErrorResponse,
   LatencyRequest,
   LatencyResponse,
+  LinkSnapshot,
   NodePool,
   CreateNodePool,
   UpdateNodePool,
@@ -22,6 +23,12 @@ import type {
   UpdateRulePool,
   TrafficPolicy,
   UpdateTrafficPolicy,
+  ConnectivityTarget,
+  CreateConnectivityTarget,
+  UpdateConnectivityTarget,
+  ConnectivityTestResponse,
+  ConnectivityDiagnosticInput,
+  ConnectivityDiagnosticResult,
 } from './types'
 
 export class ApiError extends Error {
@@ -39,6 +46,8 @@ export class ApiError extends Error {
 }
 
 let sessionPromise: Promise<Session> | undefined
+
+export const AUTH_REQUIRED_EVENT = 'sing-box-webui:auth-required'
 
 async function getSession(): Promise<Session> {
   sessionPromise ??= request<Session>('/api/v1/session')
@@ -68,12 +77,44 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
         requestId: response.headers.get('X-Request-ID') ?? '',
       }
     }
+    if (response.status === 401 && path !== '/api/v1/auth/login') {
+      sessionPromise = undefined
+      window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT))
+    }
     throw new ApiError(response.status, body)
   }
   if (response.status === 204) {
     return undefined as T
   }
   return (await response.json()) as T
+}
+
+export function getAuthSession(): Promise<Session> {
+  return getSession()
+}
+
+export async function login(token: string): Promise<void> {
+  const response = await fetch('/api/v1/auth/login', {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  })
+  if (!response.ok) {
+    let body: ErrorResponse
+    try {
+      body = (await response.json()) as ErrorResponse
+    } catch {
+      body = { error: { code: 'response_invalid', message: `请求失败（HTTP ${response.status}）` }, requestId: '' }
+    }
+    throw new ApiError(response.status, body)
+  }
+  sessionPromise = undefined
+  await getSession()
+}
+
+export async function logout(): Promise<void> {
+  await request('/api/v1/auth/logout', { method: 'POST' })
+  sessionPromise = undefined
 }
 
 export function getStatus(signal?: AbortSignal): Promise<StatusResponse> {
@@ -203,6 +244,30 @@ export function stopRuntime(): Promise<Runtime> {
   return request('/api/v1/runtime/stop', { method: 'POST' })
 }
 
+export interface ListLinksParams {
+  search?: string
+  active?: boolean
+  /** Comma-separated sort keys; prefix with `-` for descending. */
+  sort?: string
+  offset?: number
+  limit?: number
+}
+
+export function listLinks(params: ListLinksParams = {}, signal?: AbortSignal): Promise<LinkSnapshot> {
+  const query = new URLSearchParams()
+  if (params.search) query.set('search', params.search)
+  if (params.active !== undefined) query.set('active', String(params.active))
+  if (params.sort) query.set('sort', params.sort)
+  if (params.offset) query.set('offset', String(params.offset))
+  if (params.limit) query.set('limit', String(params.limit))
+  const suffix = query.size > 0 ? `?${query.toString()}` : ''
+  return request(`/api/v1/links${suffix}`, { signal })
+}
+
+export function clearLinks(): Promise<void> {
+  return request('/api/v1/links/clear', { method: 'POST' })
+}
+
 export function getTrafficPolicy(signal?: AbortSignal): Promise<TrafficPolicy> {
   return request('/api/v1/traffic-policy', { signal })
 }
@@ -221,4 +286,33 @@ export function updateCore(input: CoreUpdate): Promise<CoreInfo> {
 
 export function rollbackCore(): Promise<CoreInfo> {
   return request('/api/v1/core/rollback', { method: 'POST' })
+}
+
+export async function listConnectivityTargets(signal?: AbortSignal): Promise<ConnectivityTarget[]> {
+  const response = await request<{ items: ConnectivityTarget[] }>('/api/v1/connectivity', { signal })
+  return response.items
+}
+
+export function createConnectivityTarget(input: CreateConnectivityTarget): Promise<ConnectivityTarget> {
+  return request('/api/v1/connectivity', { method: 'POST', body: JSON.stringify(input) })
+}
+
+export function updateConnectivityTarget(id: string, input: UpdateConnectivityTarget): Promise<ConnectivityTarget> {
+  return request(`/api/v1/connectivity/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) })
+}
+
+export function deleteConnectivityTarget(id: string): Promise<void> {
+  return request(`/api/v1/connectivity/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export function testConnectivity(id: string): Promise<ConnectivityTestResponse> {
+  return request(`/api/v1/connectivity/${encodeURIComponent(id)}/test`, { method: 'POST' })
+}
+
+export function testAllConnectivity(): Promise<ConnectivityTestResponse> {
+  return request('/api/v1/connectivity/test', { method: 'POST' })
+}
+
+export function runConnectivityDiagnostic(input: ConnectivityDiagnosticInput): Promise<ConnectivityDiagnosticResult> {
+  return request('/api/v1/connectivity/diagnostic', { method: 'POST', body: JSON.stringify(input) })
 }

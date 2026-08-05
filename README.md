@@ -24,6 +24,7 @@
 - [源码开发指南](docs/development.md)
 - [架构决策索引](docs/adr/README.md)
 - [核心管理与更新](docs/core-management.md)
+- [Web 鉴权配置与运维](docs/web-authentication.md)
 - [已归档：技术规格 v0.1](docs/archive/spec-v0.1.md)（仅供历史查阅，不作为开发依据）
 
 ## 源码启动
@@ -44,5 +45,32 @@ npm --prefix web install
 go run ./cmd/webui
 npm --prefix web run dev
 ```
+
+## TUN 模式（Linux）
+
+Web/API 必须继续以普通用户运行。TUN 只要求实际执行的 sing-box 核心持有
+`CAP_NET_ADMIN`；授予一次后，通过项目反复开启、关闭 TUN 都不再需要授权：
+
+```bash
+CORE="$(readlink -f var/data/core/sing-box)"
+sudo setcap cap_net_admin+ep "$CORE"  # 仅首次或核心版本切换后执行
+./scripts/dev-tun.sh                  # 日常启动，不使用 sudo
+```
+
+`dev-tun.sh` 会设置 `SING_BOX_WEBUI_ENABLE_TUN=1` 并在启动前验证 capability；缺失时
+只给出修复命令，不会自动提权。托管核心更新或回滚会切换到另一个版本文件，届时需要
+对新的 `var/data/core/sing-box` 目标再授予一次。不要对 `go`、Vite、WebUI 后端或整个
+开发脚本授予权限，也不要使用 `sudo ./scripts/dev.sh`。
+
+Ubuntu 使用 systemd-resolved 时，sing-box 会通过 `resolvectl` 为 `singtun0` 设置和恢复
+DNS。首次使用可安装项目提供的最小 Polkit 规则：
+
+```bash
+./scripts/install-tun-polkit.sh
+```
+
+安装过程只认证一次。规则仅允许执行安装脚本的本机活动用户完成 TUN 生命周期需要的
+四个 resolved action，不使用 `org.freedesktop.resolve1.*` 通配授权。卸载时执行
+`sudo rm /etc/polkit-1/rules.d/49-sing-box-webui-resolved.rules`。
 
 检查命令见[源码开发指南](docs/development.md)。

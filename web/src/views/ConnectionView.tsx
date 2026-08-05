@@ -12,6 +12,8 @@ import {
 import type { ApplyRuntime } from '../api/types'
 import { InlineError } from '../components/InlineError'
 import { PageHeading } from '../components/PageHeading'
+import { QuickTest } from './QuickTest'
+import { NodeDiagnostic } from './NodeDiagnostic'
 
 type Mode = ApplyRuntime['mode']
 type TargetType = 'node' | 'pool'
@@ -21,7 +23,7 @@ export function ConnectionView() {
   const [subscriptionId, setSubscriptionId] = useState('')
   const [poolId, setPoolId] = useState('')
   const [targetType, setTargetType] = useState<TargetType>('node')
-  const [mode, setMode] = useState<Mode>('system-proxy')
+  const [mode, setMode] = useState<Mode>('tun')
   const subscriptionsQuery = useQuery({
     queryKey: ['subscriptions'],
     queryFn: ({ signal }) => listSubscriptions(signal),
@@ -60,6 +62,14 @@ export function ConnectionView() {
   const canApply = Boolean(hasTarget && runtime?.capabilities.singBox.available && capability?.available && !applyMutation.isPending)
   const targetLabel = targetType === 'node' ? selectedNode?.name : selectedPool?.name
   const activePoolHealth = runtime?.state === 'running' && runtime.poolId === selectedPool?.id ? runtime.poolHealth : undefined
+  const isRunning = runtime?.state === 'running'
+  const isApplying = applyMutation.isPending
+  const isStopping = stopMutation.isPending
+  const isBusy = isApplying || isStopping
+
+  useEffect(() => {
+    if (runtime?.state === 'running' && runtime.mode) setMode(runtime.mode)
+  }, [runtime?.mode, runtime?.state])
 
   return (
     <>
@@ -78,6 +88,50 @@ export function ConnectionView() {
       )}
 
       <section className="connection-layout">
+        <aside className="apply-panel" aria-label="应用代理">
+          <div className="apply-panel__summary">
+            <span>即将应用</span>
+            <strong>{targetLabel ?? '未选择目标'}</strong>
+          </div>
+          <div className="apply-panel__mode">
+            <span>代理模式</span>
+            <strong>{mode === 'system-proxy' ? '系统代理' : 'TUN 代理'}</strong>
+          </div>
+          {!runtime?.capabilities.singBox.available && (
+            <div className="capability-note apply-panel__capability">
+              <TriangleAlert size={15} aria-hidden="true" />
+              {runtime?.capabilities.singBox.detail ?? 'sing-box 核心不可用'}
+            </div>
+          )}
+          <div className="apply-panel__action">
+            {isRunning ? (
+              <button
+                className="button button--stop"
+                type="button"
+                disabled={isBusy}
+                onClick={() => stopMutation.mutate()}
+              >
+                <CircleStop size={16} aria-hidden="true" />
+                {isStopping ? '正在停止…' : '停止'}
+              </button>
+            ) : (
+              <button
+                className="button button--primary"
+                type="button"
+                disabled={!canApply || isBusy}
+                onClick={() =>
+                  targetType === 'pool'
+                    ? selectedPool && applyMutation.mutate({ poolId: selectedPool.id, mode })
+                    : selectedNode && applyMutation.mutate({ subscriptionId, nodeId: selectedNode.id, mode })
+                }
+              >
+                <Play size={16} aria-hidden="true" />
+                {isApplying ? '正在开启…' : '开启'}
+              </button>
+            )}
+          </div>
+        </aside>
+
         <div className="connection-main">
           <div className="connection-step connection-step--target">
             <span className="step-index">1</span>
@@ -132,65 +186,39 @@ export function ConnectionView() {
               <h2>代理模式</h2>
               <div className="segmented-control" role="group" aria-label="代理模式">
                 <button
-                  className={mode === 'system-proxy' ? 'segmented-control--active' : ''}
-                  type="button"
-                  onClick={() => setMode('system-proxy')}
-                >
-                  <Network size={16} aria-hidden="true" />
-                  系统代理
-                </button>
-                <button
                   className={mode === 'tun' ? 'segmented-control--active' : ''}
                   type="button"
+                  disabled={isRunning}
                   onClick={() => setMode('tun')}
                 >
                   <Shield size={16} aria-hidden="true" />
                   TUN
                 </button>
+                <button
+                  className={mode === 'system-proxy' ? 'segmented-control--active' : ''}
+                  type="button"
+                  disabled={isRunning}
+                  onClick={() => setMode('system-proxy')}
+                >
+                  <Network size={16} aria-hidden="true" />
+                  系统代理
+                </button>
               </div>
               <div className={`capability-note ${capability?.available ? 'capability-note--ok' : ''}`}>
                 {!capability?.available && <TriangleAlert size={15} aria-hidden="true" />}
                 {capability?.detail ?? '正在检测系统能力'}
+                {mode === 'system-proxy' && capability?.available && (
+                  <span className="capability-hint">仅对遵循系统代理的应用生效（如 Firefox / 终端）；Chrome 默认不读取，全局代理请用 TUN</span>
+                )}
+                {isRunning && <span className="capability-hint">停止代理后可切换模式</span>}
               </div>
             </div>
           </div>
-        </div>
 
-        <aside className="apply-panel" aria-label="应用代理">
-          <div>
-            <span>即将应用</span>
-            <strong>{targetLabel ?? '未选择目标'}</strong>
-            <small>{mode === 'system-proxy' ? '系统代理' : 'TUN 代理'}</small>
-          </div>
-          {!runtime?.capabilities.singBox.available && (
-            <div className="capability-note">
-              <TriangleAlert size={15} aria-hidden="true" />
-              {runtime?.capabilities.singBox.detail ?? 'sing-box 核心不可用'}
-            </div>
-          )}
-          <button
-            className="button button--primary button--full"
-            type="button"
-            disabled={!canApply}
-            onClick={() =>
-              targetType === 'pool'
-                ? selectedPool && applyMutation.mutate({ poolId: selectedPool.id, mode })
-                : selectedNode && applyMutation.mutate({ subscriptionId, nodeId: selectedNode.id, mode })
-            }
-          >
-            <Play size={16} aria-hidden="true" />
-            {applyMutation.isPending ? '正在应用' : '应用并连接'}
-          </button>
-          <button
-            className="button button--danger button--full"
-            type="button"
-            disabled={runtime?.state !== 'running' || stopMutation.isPending}
-            onClick={() => stopMutation.mutate()}
-          >
-            <CircleStop size={16} aria-hidden="true" />
-            停止代理
-          </button>
-        </aside>
+          <QuickTest />
+          <NodeDiagnostic kind="quality" step={5} />
+          <NodeDiagnostic kind="exit" step={6} />
+        </div>
       </section>
     </>
   )

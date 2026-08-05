@@ -14,6 +14,7 @@ import (
 	"sing-box-webui/internal/api"
 	"sing-box-webui/internal/application"
 	"sing-box-webui/internal/configstore"
+	"sing-box-webui/internal/connectivity"
 	"sing-box-webui/internal/control"
 	"sing-box-webui/internal/core"
 	"sing-box-webui/internal/events"
@@ -104,6 +105,11 @@ func main() {
 		logger.Error("open traffic policy store", "error", err)
 		os.Exit(1)
 	}
+	connectivityManager, err := connectivity.Open(filepath.Join(config.DataDir, "connectivity"), controlService)
+	if err != nil {
+		logger.Error("open connectivity store", "error", err)
+		os.Exit(1)
+	}
 
 	server, err := api.NewServer(api.ServerConfig{
 		Address:       config.Address,
@@ -118,6 +124,8 @@ func main() {
 		Control:       controlService,
 		Core:          coreManager,
 		TrafficPolicy: trafficPolicy,
+		Connectivity:  connectivityManager,
+		WebToken:      config.WebToken,
 	})
 	if err != nil {
 		logger.Error("create Web API server", "error", err)

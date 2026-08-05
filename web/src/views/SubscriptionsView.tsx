@@ -86,6 +86,15 @@ export function SubscriptionsView() {
     onSuccess: (item) => invalidate(item.id),
   })
 
+  useEffect(() => {
+    createMutation.reset()
+    refreshMutation.reset()
+    activateMutation.reset()
+    deleteMutation.reset()
+    updateMutation.reset()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, adding])
+
   const mutationError =
     copyError ??
     createMutation.error ??
@@ -223,7 +232,12 @@ export function SubscriptionsView() {
                     className="icon-button icon-button--danger"
                     title="删除订阅"
                     type="button"
-                    onClick={() => deleteMutation.mutate(selected.id)}
+                    aria-label={`删除订阅 ${selected.name}`}
+                    disabled={deleteMutation.isPending}
+                    onClick={() =>
+                      window.confirm(`删除订阅“${selected.name}”？其中 ${selected.nodeCount} 个节点及其选择状态将一并移除。`) &&
+                      deleteMutation.mutate(selected.id)
+                    }
                   >
                     <Trash2 size={17} aria-hidden="true" />
                   </button>

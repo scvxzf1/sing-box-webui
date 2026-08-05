@@ -36,6 +36,22 @@ func (s *Server) securityMiddleware(next http.Handler) http.Handler {
 			writeError(w, r, http.StatusForbidden, "invalid_origin", "The request origin is not allowed")
 			return
 		}
+		if r.URL.Path == "/healthz" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.URL.Path == "/api/v1/auth/login" {
+			if isUnsafeMethod(r.Method) && r.Header.Get("Origin") == "" {
+				writeError(w, r, http.StatusForbidden, "origin_required", "An allowed browser origin is required")
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !s.authenticated(r) {
+			writeError(w, r, http.StatusUnauthorized, "authentication_required", "Authentication is required")
+			return
+		}
 		if isUnsafeMethod(r.Method) {
 			if r.Header.Get("Origin") == "" {
 				writeError(w, r, http.StatusForbidden, "origin_required", "An allowed browser origin is required")

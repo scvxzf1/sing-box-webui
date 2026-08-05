@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"sing-box-webui/internal/application"
+	"sing-box-webui/internal/connectivity"
 	"sing-box-webui/internal/control"
 	"sing-box-webui/internal/core"
 	"sing-box-webui/internal/events"
@@ -45,6 +47,8 @@ type ServerConfig struct {
 	Control       *control.Service
 	Core          CoreController
 	TrafficPolicy *trafficpolicy.Manager
+	Connectivity  *connectivity.Manager
+	WebToken      string
 }
 
 type Server struct {
@@ -60,7 +64,10 @@ type Server struct {
 	control       *control.Service
 	core          CoreController
 	trafficPolicy *trafficpolicy.Manager
+	connectivity  *connectivity.Manager
 	csrfToken     string
+	webToken      string
+	sessionSecret [32]byte
 	handler       http.Handler
 }
 
@@ -88,7 +95,12 @@ func NewServer(config ServerConfig) (*Server, error) {
 		control:       config.Control,
 		core:          config.Core,
 		trafficPolicy: config.TrafficPolicy,
+		connectivity:  config.Connectivity,
 		csrfToken:     newCSRFToken(),
+		webToken:      config.WebToken,
+	}
+	if _, err := rand.Read(server.sessionSecret[:]); err != nil {
+		return nil, fmt.Errorf("generate session secret: %w", err)
 	}
 	server.handler = server.securityMiddleware(server.routes())
 	return server, nil
@@ -138,6 +150,8 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.health)
+	mux.HandleFunc("/api/v1/auth/login", s.login)
+	mux.HandleFunc("/api/v1/auth/logout", s.logout)
 	mux.HandleFunc("/api/v1/status", s.status)
 	mux.HandleFunc("/api/v1/events", s.eventStream)
 	mux.HandleFunc("/api/v1/session", s.session)
@@ -158,7 +172,14 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/v1/runtime", s.runtimeStatus)
 	mux.HandleFunc("/api/v1/runtime/apply", s.applyRuntime)
 	mux.HandleFunc("/api/v1/runtime/stop", s.stopRuntime)
+	mux.HandleFunc("/api/v1/links", s.links)
+	mux.HandleFunc("/api/v1/links/clear", s.clearLinks)
 	mux.HandleFunc("/api/v1/traffic-policy", s.trafficPolicyStatus)
+	mux.HandleFunc("/api/v1/connectivity", s.connectivityCollection)
+	mux.HandleFunc("/api/v1/connectivity/test", s.connectivityTest)
+	mux.HandleFunc("/api/v1/connectivity/diagnostic", s.connectivityDiagnostic)
+	mux.HandleFunc("/api/v1/connectivity/{id}", s.connectivityItem)
+	mux.HandleFunc("/api/v1/connectivity/{id}/test", s.connectivityTest)
 	mux.HandleFunc("/api/v1/core", s.coreStatus)
 	mux.HandleFunc("/api/v1/core/update", s.updateCore)
 	mux.HandleFunc("/api/v1/core/rollback", s.rollbackCore)

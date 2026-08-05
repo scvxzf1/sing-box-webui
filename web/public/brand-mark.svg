@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">sing-box WebUI</title>
+  <desc id="desc">A tunnel carrying a connected data path</desc>
+  <defs>
+    <linearGradient id="surface" x1="8" y1="6" x2="58" y2="60" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#087F5B"/>
+      <stop offset="0.56" stop-color="#079B92"/>
+      <stop offset="1" stop-color="#1769AA"/>
+    </linearGradient>
+  </defs>
+  <rect x="3" y="3" width="58" height="58" rx="15" fill="url(#surface)"/>
+  <path d="M17 46V27C17 18.7 23.7 12 32 12s15 6.7 15 15v19" fill="none" stroke="#D9FFF4" stroke-width="5" stroke-linecap="round"/>
+  <path d="M24 46V29.5a8 8 0 0 1 16 0V46" fill="none" stroke="#063E46" stroke-width="4" stroke-linecap="round" opacity="0.72"/>
+  <path d="M13 38h12l5-11 6 21 5-10h10" fill="none" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="13" cy="38" r="3" fill="#8AF5D0"/>
+  <circle cx="51" cy="38" r="3" fill="#9CD8FF"/>
+</svg>

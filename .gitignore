@@ -1,6 +1,7 @@
 # Local runtime data
 /var/
 /bin/
+/node_modules/
 
 # Frontend output
 /web/node_modules/

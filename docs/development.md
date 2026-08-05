@@ -91,6 +91,12 @@ SING_BOX_BIN=/absolute/path/to/sing-box
 
 环境变量不得承载长期认证秘密。测试秘密使用测试夹具或进程内注入，并确保不写日志。
 
+Web 鉴权默认开启，访问令牌保存在项目的 `var/config.json` 中。首次启动会自动生成权限为 `0600` 的
+随机令牌；也可以在停止服务后编辑 `web.token`（至少 8 个字符）。通过
+`SING_BOX_WEBUI_CONFIG` 可以指定另一个配置文件路径。令牌只用于登录，浏览器后续使用
+HttpOnly、SameSite=Strict 的短期会话 Cookie，不把令牌写入 Web Storage。
+将 `web.enabled` 显式设为 `false` 并重启服务可禁用 Web 鉴权；省略该配置项仍视为开启。
+
 ### 5.1 节点布局与延迟测试
 
 节点页的每行 `1/2/3/4` 列偏好保存在浏览器 `localStorage` 的
@@ -178,6 +184,11 @@ sudo ./scripts/dev.sh
 TUN 开发开始前，必须先完成 [ADR-0001](adr/README.md#阻塞性决策队列)。临时人工实验也应只提升明确
 构建出的 Core/sing-box 二进制，而不是整个源码工具链；实验步骤不得进入默认开发
 命令。
+
+本机实验使用 `./scripts/dev-tun.sh` 启动。该脚本仍以普通用户运行，仅设置功能开关并
+验证当前 sing-box 文件已有 `CAP_NET_ADMIN`，绝不调用 `sudo` 或 `pkexec`。首次授权及
+托管核心更新/回滚后的重新授权命令见项目 README；capability 必须加在解析符号链接后
+得到的版本文件上，不能加在 `var/data/core/sing-box` 符号链接本身。
 
 ## 7. fake sing-box
 

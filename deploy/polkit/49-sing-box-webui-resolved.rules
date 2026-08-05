@@ -1,0 +1,17 @@
+// Allow the local desktop owner to manage the DNS state used by singtun0.
+// Keep this list explicit: granting org.freedesktop.resolve1.* is too broad.
+polkit.addRule(function(action, subject) {
+    var allowedActions = [
+        "org.freedesktop.resolve1.set-dns-servers",
+        "org.freedesktop.resolve1.set-domains",
+        "org.freedesktop.resolve1.set-default-route",
+        "org.freedesktop.resolve1.revert"
+    ];
+
+    if (allowedActions.indexOf(action.id) !== -1 &&
+        subject.user === "__SING_BOX_WEBUI_USER__" &&
+        subject.local === true &&
+        subject.active === true) {
+        return polkit.Result.YES;
+    }
+});

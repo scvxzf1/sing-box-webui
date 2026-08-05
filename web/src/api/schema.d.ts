@@ -36,6 +36,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/traffic-policy": {
         parameters: {
             query?: never;
@@ -248,6 +280,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/links": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listLinks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/links/clear": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["clearLinks"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/rules": {
         parameters: {
             query?: never;
@@ -380,6 +444,90 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/connectivity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listConnectivityTargets"];
+        put?: never;
+        post: operations["createConnectivityTarget"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectivity/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["testAllConnectivity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectivity/diagnostic": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["runConnectivityDiagnostic"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectivity/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ConnectivityTargetID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["deleteConnectivityTarget"];
+        options?: never;
+        head?: never;
+        patch: operations["updateConnectivityTarget"];
+        trace?: never;
+    };
+    "/api/v1/connectivity/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ConnectivityTargetID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["testConnectivity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/core": {
         parameters: {
             query?: never;
@@ -432,6 +580,59 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        ConnectivityTarget: {
+            id: string;
+            name: string;
+            url: string;
+        };
+        CreateConnectivityTarget: {
+            name: string;
+            url: string;
+        };
+        UpdateConnectivityTarget: {
+            name?: string;
+            url?: string;
+        };
+        ConnectivityPathResult: {
+            /** @enum {string} */
+            status: "ok" | "timeout" | "failed";
+            latencyMs?: number;
+            detail?: string;
+        };
+        ConnectivityResult: {
+            targetId: string;
+            name: string;
+            url: string;
+            direct: components["schemas"]["ConnectivityPathResult"];
+            proxy?: components["schemas"]["ConnectivityPathResult"];
+        };
+        ConnectivityTestResponse: {
+            items: components["schemas"]["ConnectivityResult"][];
+        };
+        ConnectivityDiagnosticInput: {
+            /** @enum {string} */
+            kind: "quality" | "exit";
+            /** @enum {string} */
+            provider: 123169 | "ippure" | "ipify" | "ipsb" | "ifconfigme" | "icanhazip" | "ipinfo";
+        };
+        ConnectivityDiagnosticResult: {
+            /** @enum {string} */
+            kind: "quality" | "exit";
+            provider: string;
+            providerName: string;
+            /** Format: uri */
+            url: string;
+            latencyMs: number;
+            ip?: string;
+            country?: string;
+            countryCode?: string;
+            region?: string;
+            city?: string;
+            asn?: string;
+            organization?: string;
+            fraudScore?: number;
+            residential?: boolean;
+        };
         Health: {
             /** @constant */
             status: "ok";
@@ -739,6 +940,60 @@ export interface components {
             capabilities: components["schemas"]["Capabilities"];
             poolHealth?: components["schemas"]["PoolHealth"];
         };
+        Link: {
+            id: string;
+            /** @description Remote host (hostname or IP) with destination port. */
+            host: string;
+            network?: string;
+            type?: string;
+            /** Format: int64 */
+            upload: number;
+            /** Format: int64 */
+            download: number;
+            /**
+             * Format: double
+             * @description Bytes per second, sampled between polls.
+             */
+            uploadRate: number;
+            /**
+             * Format: double
+             * @description Bytes per second, sampled between polls.
+             */
+            downloadRate: number;
+            /** @description Human-readable node that carried this connection, or direct/block. */
+            node: string;
+            chain?: string[];
+            /** Format: date-time */
+            startedAt?: string;
+            /** Format: date-time */
+            firstSeenAt: string;
+            /** Format: date-time */
+            lastSeenAt: string;
+            active: boolean;
+        };
+        LinkStats: {
+            active: number;
+            /** @description Number of links returned by the current filter (before pagination). */
+            total: number;
+            /** Format: int64 */
+            uploadTotal: number;
+            /** Format: int64 */
+            downloadTotal: number;
+            /** Format: int64 */
+            uploadRate: number;
+            /** Format: int64 */
+            downloadRate: number;
+            /** @description Maximum number of links retained in memory. */
+            trackedCapacity: number;
+        };
+        LinkSnapshot: {
+            /** @description Whether connection monitoring is actively polling. */
+            running: boolean;
+            /** Format: date-time */
+            updatedAt: string;
+            stats: components["schemas"]["LinkStats"];
+            links: components["schemas"]["Link"][];
+        };
         ApplyRuntime: {
             subscriptionId?: string;
             nodeId?: string;
@@ -783,6 +1038,7 @@ export interface components {
     };
     parameters: {
         SubscriptionID: string;
+        ConnectivityTargetID: string;
         CSRFToken: string;
     };
     requestBodies: never;
@@ -828,6 +1084,52 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Status"];
                 };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    token: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Authentication succeeded and an HttpOnly session cookie was issued. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The browser session cookie was cleared. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             default: components["responses"]["Error"];
         };
@@ -1301,6 +1603,61 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    listLinks: {
+        parameters: {
+            query?: {
+                /** @description Case-insensitive substring match across host, node, network, type, and chain. */
+                search?: string;
+                /** @description Filter to live (true) or closed (false) connections. */
+                active?: boolean;
+                /** @description Comma-separated sort keys applied in order. Prefix with - for descending. Keys: host, node, upload, download, uploadRate, downloadRate, startedAt. Active connections always sort before closed ones. */
+                sort?: string;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Snapshot of observed proxy connections. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LinkSnapshot"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    clearLinks: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Connection cache cleared. Monitoring continues. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        status: string;
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     listRules: {
         parameters: {
             query?: never;
@@ -1608,6 +1965,183 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Runtime"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listConnectivityTargets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stored quick connectivity test targets. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["ConnectivityTarget"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createConnectivityTarget: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateConnectivityTarget"];
+            };
+        };
+        responses: {
+            /** @description Created connectivity target. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectivityTarget"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    testAllConnectivity: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Direct and proxied latency for every stored target, measured concurrently. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectivityTestResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    runConnectivityDiagnostic: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConnectivityDiagnosticInput"];
+            };
+        };
+        responses: {
+            /** @description Quality or exit-IP details measured through the active proxy. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectivityDiagnosticResult"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteConnectivityTarget: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ConnectivityTargetID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Connectivity target deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    updateConnectivityTarget: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ConnectivityTargetID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateConnectivityTarget"];
+            };
+        };
+        responses: {
+            /** @description Updated connectivity target. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectivityTarget"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    testConnectivity: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ConnectivityTargetID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Direct and proxied latency for a single target. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectivityTestResponse"];
                 };
             };
             default: components["responses"]["Error"];

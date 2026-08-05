@@ -28,6 +28,36 @@ paths:
                 $ref: '#/components/schemas/Status'
         default:
           $ref: '#/components/responses/Error'
+  /api/v1/auth/login:
+    post:
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  minLength: 8
+      responses:
+        '200':
+          description: Authentication succeeded and an HttpOnly session cookie was issued.
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/auth/logout:
+    post:
+      operationId: logout
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: The browser session cookie was cleared.
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/traffic-policy:
     get:
       operationId: getTrafficPolicy
@@ -332,6 +362,67 @@ paths:
                 $ref: '#/components/schemas/Runtime'
         default:
           $ref: '#/components/responses/Error'
+  /api/v1/links:
+    get:
+      operationId: listLinks
+      parameters:
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Case-insensitive substring match across host, node, network, type, and chain.
+        - name: active
+          in: query
+          schema:
+            type: boolean
+          description: Filter to live (true) or closed (false) connections.
+        - name: sort
+          in: query
+          schema:
+            type: string
+          description: >-
+            Comma-separated sort keys applied in order. Prefix with - for descending.
+            Keys: host, node, upload, download, uploadRate, downloadRate, startedAt.
+            Active connections always sort before closed ones.
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 1000
+      responses:
+        '200':
+          description: Snapshot of observed proxy connections.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LinkSnapshot'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/links/clear:
+    post:
+      operationId: clearLinks
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Connection cache cleared. Monitoring continues.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status:
+                    type: string
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/rules:
     get:
       operationId: listRules
@@ -566,6 +657,125 @@ paths:
                 $ref: '#/components/schemas/Runtime'
         default:
           $ref: '#/components/responses/Error'
+  /api/v1/connectivity:
+    get:
+      operationId: listConnectivityTargets
+      responses:
+        '200':
+          description: Stored quick connectivity test targets.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ConnectivityTarget'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      operationId: createConnectivityTarget
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConnectivityTarget'
+      responses:
+        '201':
+          description: Created connectivity target.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectivityTarget'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/connectivity/test:
+    post:
+      operationId: testAllConnectivity
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Direct and proxied latency for every stored target, measured concurrently.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectivityTestResponse'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/connectivity/diagnostic:
+    post:
+      operationId: runConnectivityDiagnostic
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectivityDiagnosticInput'
+      responses:
+        '200':
+          description: Quality or exit-IP details measured through the active proxy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectivityDiagnosticResult'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/connectivity/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ConnectivityTargetID'
+    patch:
+      operationId: updateConnectivityTarget
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateConnectivityTarget'
+      responses:
+        '200':
+          description: Updated connectivity target.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectivityTarget'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: deleteConnectivityTarget
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Connectivity target deleted.
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/connectivity/{id}/test:
+    parameters:
+      - $ref: '#/components/parameters/ConnectivityTargetID'
+    post:
+      operationId: testConnectivity
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Direct and proxied latency for a single target.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectivityTestResponse'
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/core:
     get:
       operationId: getCore
@@ -620,6 +830,12 @@ components:
       required: true
       schema:
         type: string
+    ConnectivityTargetID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
     CSRFToken:
       name: X-CSRF-Token
       in: header
@@ -634,6 +850,119 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
   schemas:
+    ConnectivityTarget:
+      type: object
+      additionalProperties: false
+      required: [id, name, url]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        url:
+          type: string
+    CreateConnectivityTarget:
+      type: object
+      additionalProperties: false
+      required: [name, url]
+      properties:
+        name:
+          type: string
+        url:
+          type: string
+    UpdateConnectivityTarget:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        url:
+          type: string
+    ConnectivityPathResult:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, timeout, failed]
+        latencyMs:
+          type: integer
+          minimum: 1
+        detail:
+          type: string
+    ConnectivityResult:
+      type: object
+      additionalProperties: false
+      required: [targetId, name, url, direct]
+      properties:
+        targetId:
+          type: string
+        name:
+          type: string
+        url:
+          type: string
+        direct:
+          $ref: '#/components/schemas/ConnectivityPathResult'
+        proxy:
+          $ref: '#/components/schemas/ConnectivityPathResult'
+    ConnectivityTestResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+          items:
+            type: array
+            items:
+              $ref: '#/components/schemas/ConnectivityResult'
+    ConnectivityDiagnosticInput:
+      type: object
+      additionalProperties: false
+      required: [kind, provider]
+      properties:
+        kind:
+          type: string
+          enum: [quality, exit]
+        provider:
+          type: string
+          enum: [123169, ippure, ipify, ipsb, ifconfigme, icanhazip, ipinfo]
+    ConnectivityDiagnosticResult:
+      type: object
+      additionalProperties: false
+      required: [kind, provider, providerName, url, latencyMs]
+      properties:
+        kind:
+          type: string
+          enum: [quality, exit]
+        provider:
+          type: string
+        providerName:
+          type: string
+        url:
+          type: string
+          format: uri
+        latencyMs:
+          type: integer
+          minimum: 1
+        ip:
+          type: string
+        country:
+          type: string
+        countryCode:
+          type: string
+        region:
+          type: string
+        city:
+          type: string
+        asn:
+          type: string
+        organization:
+          type: string
+        fraudScore:
+          type: integer
+          minimum: 0
+        residential:
+          type: boolean
     Health:
       type: object
       additionalProperties: false
@@ -1363,6 +1692,94 @@ components:
           $ref: '#/components/schemas/Capabilities'
         poolHealth:
           $ref: '#/components/schemas/PoolHealth'
+    Link:
+      type: object
+      additionalProperties: false
+      required: [id, host, upload, download, uploadRate, downloadRate, node, active, firstSeenAt, lastSeenAt]
+      properties:
+        id:
+          type: string
+        host:
+          type: string
+          description: Remote host (hostname or IP) with destination port.
+        network:
+          type: string
+        type:
+          type: string
+        upload:
+          type: integer
+          format: int64
+        download:
+          type: integer
+          format: int64
+        uploadRate:
+          type: number
+          format: double
+          description: Bytes per second, sampled between polls.
+        downloadRate:
+          type: number
+          format: double
+          description: Bytes per second, sampled between polls.
+        node:
+          type: string
+          description: Human-readable node that carried this connection, or direct/block.
+        chain:
+          type: array
+          items:
+            type: string
+        startedAt:
+          type: string
+          format: date-time
+        firstSeenAt:
+          type: string
+          format: date-time
+        lastSeenAt:
+          type: string
+          format: date-time
+        active:
+          type: boolean
+    LinkStats:
+      type: object
+      additionalProperties: false
+      required: [active, total, uploadTotal, downloadTotal, uploadRate, downloadRate, trackedCapacity]
+      properties:
+        active:
+          type: integer
+        total:
+          type: integer
+          description: Number of links returned by the current filter (before pagination).
+        uploadTotal:
+          type: integer
+          format: int64
+        downloadTotal:
+          type: integer
+          format: int64
+        uploadRate:
+          type: integer
+          format: int64
+        downloadRate:
+          type: integer
+          format: int64
+        trackedCapacity:
+          type: integer
+          description: Maximum number of links retained in memory.
+    LinkSnapshot:
+      type: object
+      additionalProperties: false
+      required: [running, updatedAt, stats, links]
+      properties:
+        running:
+          type: boolean
+          description: Whether connection monitoring is actively polling.
+        updatedAt:
+          type: string
+          format: date-time
+        stats:
+          $ref: '#/components/schemas/LinkStats'
+        links:
+          type: array
+          items:
+            $ref: '#/components/schemas/Link'
     ApplyRuntime:
       type: object
       additionalProperties: false
