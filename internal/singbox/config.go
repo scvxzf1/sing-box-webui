@@ -6,8 +6,10 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
+	"sing-box-webui/internal/dnsprofile"
 	"sing-box-webui/internal/subscription"
 )
 
@@ -38,12 +40,12 @@ func BuildConfig(node subscription.Node, mode ProxyMode, mixedPort uint16) ([]by
 }
 
 func BuildConfigWithRules(node subscription.Node, mode ProxyMode, mixedPort uint16, routeRules []map[string]any) ([]byte, error) {
-	return BuildConfigWithController(node, mode, mixedPort, routeRules, ControllerOptions{})
+	return BuildConfigWithController(node, mode, mixedPort, routeRules, ControllerOptions{}, dnsprofile.DefaultProfile(), false)
 }
 
 // BuildConfigWithController builds a single-node config, optionally exposing the
 // Clash API so the control plane can inspect live connections and traffic.
-func BuildConfigWithController(node subscription.Node, mode ProxyMode, mixedPort uint16, routeRules []map[string]any, controller ControllerOptions) ([]byte, error) {
+func BuildConfigWithController(node subscription.Node, mode ProxyMode, mixedPort uint16, routeRules []map[string]any, controller ControllerOptions, dns dnsprofile.Profile, allowLan bool) ([]byte, error) {
 	if mode != ModeSystemProxy && mode != ModeTUN {
 		return nil, fmt.Errorf("unsupported proxy mode %q", mode)
 	}
@@ -55,24 +57,9 @@ func BuildConfigWithController(node subscription.Node, mode ProxyMode, mixedPort
 		return nil, err
 	}
 
-	var inbound map[string]any
-	if mode == ModeSystemProxy {
-		inbound = map[string]any{
-			"type":        "mixed",
-			"tag":         "mixed-in",
-			"listen":      "127.0.0.1",
-			"listen_port": mixedPort,
-		}
-	} else {
-		inbound = map[string]any{
-			"type":           "tun",
-			"tag":            "tun-in",
-			"interface_name": "singtun0",
-			"address":        []string{"172.19.0.1/30"},
-			"auto_route":     true,
-			"strict_route":   true,
-			"stack":          "system",
-		}
+	inbounds := []any{buildInbound(mode, mixedPort, allowLan)}
+	if extra := lanInbound(mode, mixedPort, allowLan); extra != nil {
+		inbounds = append(inbounds, extra)
 	}
 
 	config := map[string]any{
@@ -80,17 +67,16 @@ func BuildConfigWithController(node subscription.Node, mode ProxyMode, mixedPort
 			"level":     "info",
 			"timestamp": true,
 		},
-		"inbounds": []any{inbound},
+		"inbounds": inbounds,
 		"outbounds": []any{
 			outbound,
 			map[string]any{"type": "direct", "tag": "direct"},
 			map[string]any{"type": "block", "tag": "block"},
 		},
-		"route": map[string]any{
-			"auto_detect_interface": true,
-			"final":                 "proxy",
-			"rules":                 routeRules,
-		},
+		"route": buildRoute(mode, routeRules, dns),
+	}
+	if mode == ModeTUN {
+		config["dns"] = buildTUNDNS(dns)
 	}
 	if controller.Address != "" {
 		config["experimental"] = clashAPIConfig(controller.Address, controller.Secret)
@@ -111,6 +97,11 @@ func BuildPoolConfig(nodes []subscription.Node, mode ProxyMode, mixedPort uint16
 }
 
 func BuildPoolConfigWithRules(nodes []subscription.Node, mode ProxyMode, mixedPort uint16, options URLTestOptions, routeRules []map[string]any) ([]byte, error) {
+	return BuildPoolConfigWithDNS(nodes, mode, mixedPort, options, routeRules, dnsprofile.DefaultProfile(), false)
+}
+
+// BuildPoolConfigWithDNS compiles a pool config with an explicit DNS profile.
+func BuildPoolConfigWithDNS(nodes []subscription.Node, mode ProxyMode, mixedPort uint16, options URLTestOptions, routeRules []map[string]any, dns dnsprofile.Profile, allowLan bool) ([]byte, error) {
 	if len(nodes) < 2 {
 		return nil, fmt.Errorf("node pool requires at least 2 available members")
 	}
@@ -169,11 +160,18 @@ func BuildPoolConfigWithRules(nodes []subscription.Node, mode ProxyMode, mixedPo
 		map[string]any{"type": "block", "tag": "block"},
 	)
 
+	inbounds := []any{buildInbound(mode, mixedPort, allowLan)}
+	if extra := lanInbound(mode, mixedPort, allowLan); extra != nil {
+		inbounds = append(inbounds, extra)
+	}
 	config := map[string]any{
 		"log":       map[string]any{"level": "info", "timestamp": true},
-		"inbounds":  []any{buildInbound(mode, mixedPort)},
+		"inbounds":  inbounds,
 		"outbounds": outbounds,
-		"route":     map[string]any{"auto_detect_interface": true, "final": "proxy", "rules": routeRules},
+		"route":     buildRoute(mode, routeRules, dns),
+	}
+	if mode == ModeTUN {
+		config["dns"] = buildTUNDNS(dns)
 	}
 	if options.ControllerAddress != "" {
 		config["experimental"] = clashAPIConfig(options.ControllerAddress, options.ControllerSecret)
@@ -185,14 +183,134 @@ func PoolMemberTag(index int) string {
 	return fmt.Sprintf("pool-member-%03d", index)
 }
 
-func buildInbound(mode ProxyMode, mixedPort uint16) map[string]any {
+func buildInbound(mode ProxyMode, mixedPort uint16, allowLan bool) map[string]any {
 	if mode == ModeSystemProxy {
-		return map[string]any{"type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": mixedPort}
+		listen := "127.0.0.1"
+		if allowLan {
+			listen = "0.0.0.0"
+		}
+		return map[string]any{"type": "mixed", "tag": "mixed-in", "listen": listen, "listen_port": mixedPort}
 	}
 	return map[string]any{
 		"type": "tun", "tag": "tun-in", "interface_name": "singtun0",
-		"address": []string{"172.19.0.1/30"}, "auto_route": true, "strict_route": true, "stack": "system",
+		"address": []string{"198.18.0.1/30", "fdfe:dcba:9876::1/126"}, "auto_route": true, "strict_route": true, "stack": "system",
 	}
+}
+
+// lanInbound returns an extra mixed inbound bound to 0.0.0.0 so LAN devices can
+// point their proxy at this host. It is only needed in TUN mode, where the
+// primary inbound is the tun interface; in system-proxy mode the primary mixed
+// inbound is already rebound to 0.0.0.0 by buildInbound.
+func lanInbound(mode ProxyMode, mixedPort uint16, allowLan bool) map[string]any {
+	if !allowLan || mode != ModeTUN {
+		return nil
+	}
+	return map[string]any{"type": "mixed", "tag": "mixed-lan", "listen": "0.0.0.0", "listen_port": mixedPort}
+}
+
+// buildTUNDNS compiles the persisted DNS profile into a sing-box DNS section.
+// The profile is expected to have passed dnsprofile validation; the compiler
+// additionally guarantees that plain servers (udp/tcp/tls/https/quic/h3) can
+// bootstrap themselves by rewriting domain addresses onto a synthesized
+// bootstrap resolver, so a saved profile can never produce a config that
+// sing-box refuses to start.
+func buildTUNDNS(profile dnsprofile.Profile) map[string]any {
+	servers := make([]any, 0, len(profile.Servers)+2)
+	bootstrapTag := ""
+	for _, server := range profile.Servers {
+		compiled := map[string]any{"type": server.Type, "tag": server.Tag}
+		switch server.Type {
+		case "local", "hosts":
+			// no address fields
+		default:
+			if !isIPLiteral(server.Server) {
+				if bootstrapTag == "" {
+					bootstrapTag = uniqueDNSTag(profile, "dns-bootstrap")
+					servers = append(servers, map[string]any{
+						"type": "udp", "tag": bootstrapTag, "server": "223.5.5.5",
+					})
+				}
+				compiled["domain_resolver"] = map[string]any{"server": bootstrapTag}
+			}
+			compiled["server"] = server.Server
+			if server.Port != nil {
+				compiled["server_port"] = *server.Port
+			}
+		}
+		servers = append(servers, compiled)
+	}
+
+	final := profile.Final
+	if profile.FakeIP.Enabled {
+		final = profile.FakeIPResponderTag()
+		servers = append(servers, map[string]any{
+			"type":        "fakeip",
+			"tag":         profile.FakeIPResponderTag(),
+			"inet4_range": profile.FakeIP.Inet4Range,
+			"inet6_range": profile.FakeIP.Inet6Range,
+		})
+	}
+	result := map[string]any{
+		"servers":  servers,
+		"final":    final,
+		"strategy": profile.Strategy,
+		// Record the IP→domain mapping of every hijacked answer so IP-only
+		// TUN connections can still be labelled with their domain in the
+		// Clash API (and the links view).
+		"reverse_mapping": true,
+	}
+	if profile.FakeIP.Enabled {
+		result["rules"] = []any{
+			map[string]any{"query_type": []string{"A", "AAAA"}, "server": profile.FakeIPResponderTag()},
+		}
+	}
+	return result
+}
+
+func buildRoute(mode ProxyMode, routeRules []map[string]any, dns dnsprofile.Profile) map[string]any {
+	rules := append([]map[string]any(nil), routeRules...)
+	if mode == ModeTUN {
+		// hijack-dns must precede user rules; sniff runs last so port-53
+		// traffic is answered, not sniffed. Sniffing recovers the domain
+		// (TLS SNI / HTTP Host / QUIC) that TUN connections otherwise lose
+		// after the hijacked DNS exchange, populating Clash API host fields.
+		rules = append([]map[string]any{{"port": 53, "action": "hijack-dns"}}, rules...)
+		rules = append(rules, map[string]any{"action": "sniff"})
+	}
+	route := map[string]any{
+		"auto_detect_interface": true,
+		"final":                 "proxy",
+		"rules":                 rules,
+	}
+	if mode == ModeTUN {
+		// Outbound dials resolve their server domains through this resolver;
+		// without it sing-box 1.13 rejects TUN configs that define DNS servers.
+		route["default_domain_resolver"] = map[string]any{"server": dns.Final}
+	}
+	return route
+}
+
+// uniqueDNSTag picks a tag that does not collide with any user-configured
+// server tag. The fakeip tag is synthesized from a server tag itself, so it is
+// collision-free by construction.
+func uniqueDNSTag(profile dnsprofile.Profile, base string) string {
+	used := map[string]struct{}{}
+	for _, server := range profile.Servers {
+		used[server.Tag] = struct{}{}
+	}
+	if _, taken := used[base]; !taken {
+		return base
+	}
+	for index := 2; ; index++ {
+		candidate := fmt.Sprintf("%s-%d", base, index)
+		if _, taken := used[candidate]; !taken {
+			return candidate
+		}
+	}
+}
+
+func isIPLiteral(value string) bool {
+	return net.ParseIP(strings.TrimSuffix(value, ".")) != nil
 }
 
 func buildOutbound(node subscription.Node, tag string) (map[string]any, error) {

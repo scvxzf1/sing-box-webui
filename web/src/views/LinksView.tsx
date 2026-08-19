@@ -6,7 +6,7 @@ import type { Link } from '../api/types'
 import { InlineError } from '../components/InlineError'
 import { PageHeading } from '../components/PageHeading'
 
-type SortColumn = 'host' | 'node' | 'download' | 'upload' | 'downloadRate' | 'uploadRate'
+type SortColumn = 'host' | 'url' | 'node' | 'download' | 'upload' | 'downloadRate' | 'uploadRate'
 
 interface SortRule {
   column: SortColumn
@@ -15,6 +15,7 @@ interface SortRule {
 
 const columns: Array<{ key: SortColumn; label: string; numeric?: boolean }> = [
   { key: 'host', label: '主机' },
+  { key: 'url', label: '网址 / 域名' },
   { key: 'download', label: '下载量', numeric: true },
   { key: 'upload', label: '上传量', numeric: true },
   { key: 'downloadRate', label: '下载速度', numeric: true },
@@ -236,6 +237,9 @@ function LinkRow({ link }: { link: Link }) {
       <td className="links-cell-host" title={link.host}>
         <span className={`links-live-dot ${link.active ? 'links-live-dot--on' : ''}`} aria-hidden="true" />
         <span className="links-host-text">{link.host}</span>
+      </td>
+      <td className="links-cell-url" title={link.url || undefined}>
+        <span className={link.url ? 'links-url-text' : 'links-url-empty'}>{link.url || '—'}</span>
       </td>
       <td className="links-cell-num">{formatBytes(link.download)}</td>
       <td className="links-cell-num">{formatBytes(link.upload)}</td>

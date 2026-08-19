@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"sing-box-webui/internal/dnsprofile"
 	"sing-box-webui/internal/subscription"
 )
 
@@ -31,6 +32,25 @@ func TestBuildConfig(t *testing.T) {
 		}
 		if len(config["inbounds"].([]any)) != 1 || len(config["outbounds"].([]any)) != 3 {
 			t.Fatalf("unexpected config shape: %+v", config)
+		}
+		_, hasDNS := config["dns"]
+		if hasDNS != (mode == ModeTUN) {
+			t.Fatalf("dns presence for %s = %t, want %t", mode, hasDNS, mode == ModeTUN)
+		}
+		if mode == ModeTUN {
+			inbound := config["inbounds"].([]any)[0].(map[string]any)
+			addresses := inbound["address"].([]any)
+			if len(addresses) != 2 || addresses[0] != "198.18.0.1/30" || addresses[1] != "fdfe:dcba:9876::1/126" {
+				t.Fatalf("unexpected TUN addresses: %+v", addresses)
+			}
+			dns := config["dns"].(map[string]any)
+			if dns["final"] != "dns-google" || dns["strategy"] != "prefer_ipv4" {
+				t.Fatalf("unexpected TUN DNS config: %+v", dns)
+			}
+			rules := config["route"].(map[string]any)["rules"].([]any)
+			if len(rules) == 0 || rules[0].(map[string]any)["port"] != float64(53) || rules[0].(map[string]any)["action"] != "hijack-dns" {
+				t.Fatalf("unexpected TUN DNS route rule: %+v", rules)
+			}
 		}
 	}
 }
@@ -90,6 +110,112 @@ func TestBuildPoolConfigUsesURLTestOutbound(t *testing.T) {
 	clashAPI := experimental["clash_api"].(map[string]any)
 	if clashAPI["external_controller"] != "127.0.0.1:39092" || clashAPI["secret"] != "test-secret" {
 		t.Fatalf("unexpected clash API: %+v", clashAPI)
+	}
+
+	tunContent, err := BuildPoolConfig(nodes, ModeTUN, 2080, URLTestOptions{
+		URL: "https://www.gstatic.com/generate_204", Interval: time.Minute, Tolerance: 80,
+		IdleTimeout: 10 * time.Minute, InterruptExistingConnections: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tunConfig map[string]any
+	if err := json.Unmarshal(tunContent, &tunConfig); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tunConfig["dns"]; !ok {
+		t.Fatal("TUN pool config is missing DNS settings")
+	}
+	tunInbound := tunConfig["inbounds"].([]any)[0].(map[string]any)
+	addresses := tunInbound["address"].([]any)
+	if len(addresses) != 2 || addresses[1] != "fdfe:dcba:9876::1/126" {
+		t.Fatalf("unexpected TUN pool addresses: %+v", addresses)
+	}
+}
+
+func TestBuildConfigCustomDNSProfile(t *testing.T) {
+	t.Parallel()
+	node := subscription.Node{Type: "shadowsocks", Server: "1.1.1.1", Port: 443, Method: "aes-128-gcm", Password: "secret"}
+	port := 853
+	profile := dnsprofile.Profile{
+		Servers: []dnsprofile.Server{
+			{Tag: "dns-local", Type: "udp", Server: "119.29.29.29"},
+			{Tag: "dns-remote", Type: "https", Server: "dns.google", Port: &port},
+		},
+		Final:    "dns-remote",
+		Strategy: dnsprofile.StrategyPreferIPv6,
+	}
+	content, err := BuildConfigWithController(node, ModeTUN, 2080, nil, ControllerOptions{}, profile, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(content, &config); err != nil {
+		t.Fatal(err)
+	}
+	dns := config["dns"].(map[string]any)
+	if dns["final"] != "dns-remote" || dns["strategy"] != "prefer_ipv6" {
+		t.Fatalf("unexpected DNS settings: %+v", dns)
+	}
+	servers := dns["servers"].([]any)
+	if len(servers) != 3 {
+		t.Fatalf("expected bootstrap server plus 2 configured servers, got %+v", servers)
+	}
+	byTag := make(map[string]map[string]any, len(servers))
+	for _, item := range servers {
+		server := item.(map[string]any)
+		byTag[server["tag"].(string)] = server
+	}
+	bootstrap := byTag["dns-bootstrap"]
+	if bootstrap == nil || bootstrap["type"] != "udp" || bootstrap["server"] != "223.5.5.5" {
+		t.Fatalf("missing bootstrap server: %+v", servers)
+	}
+	plain := byTag["dns-local"]
+	if plain == nil || plain["server"] != "119.29.29.29" {
+		t.Fatalf("unexpected plain server: %+v", plain)
+	}
+	remote := byTag["dns-remote"]
+	resolver := remote["domain_resolver"].(map[string]any)
+	if remote["server"] != "dns.google" || remote["server_port"] != float64(853) || resolver["server"] != "dns-bootstrap" {
+		t.Fatalf("domain server missing bootstrap resolver: %+v", remote)
+	}
+	route := config["route"].(map[string]any)
+	defaultResolver := route["default_domain_resolver"].(map[string]any)
+	if defaultResolver["server"] != "dns-remote" {
+		t.Fatalf("unexpected default domain resolver: %+v", route)
+	}
+}
+
+func TestBuildConfigFakeIPProfile(t *testing.T) {
+	t.Parallel()
+	node := subscription.Node{Type: "shadowsocks", Server: "1.1.1.1", Port: 443, Method: "aes-128-gcm", Password: "secret"}
+	profile := dnsprofile.Profile{
+		Servers:  []dnsprofile.Server{{Tag: "dns-google", Type: "udp", Server: "8.8.8.8"}},
+		Final:    "dns-google",
+		Strategy: dnsprofile.StrategyPreferIPv4,
+		FakeIP:   dnsprofile.FakeIP{Enabled: true, Inet4Range: "198.18.0.0/15", Inet6Range: "fc00::/18"},
+	}
+	content, err := BuildConfigWithController(node, ModeTUN, 2080, nil, ControllerOptions{}, profile, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(content, &config); err != nil {
+		t.Fatal(err)
+	}
+	dns := config["dns"].(map[string]any)
+	if dns["final"] != "dns-google-fakeip" {
+		t.Fatalf("fakeip final = %v", dns["final"])
+	}
+	servers := dns["servers"].([]any)
+	fakeip := servers[len(servers)-1].(map[string]any)
+	if fakeip["type"] != "fakeip" || fakeip["tag"] != "dns-google-fakeip" || fakeip["inet4_range"] != "198.18.0.0/15" {
+		t.Fatalf("unexpected fakeip server: %+v", fakeip)
+	}
+	rules := dns["rules"].([]any)
+	queryRule := rules[0].(map[string]any)
+	if queryRule["server"] != "dns-google-fakeip" {
+		t.Fatalf("unexpected fakeip rule: %+v", queryRule)
 	}
 }
 

@@ -113,7 +113,11 @@ func (m *Manager) Stop(ctx context.Context) (Snapshot, error) {
 		return m.Snapshot(), nil
 	case <-ctx.Done():
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
-		<-done
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			return m.Snapshot(), fmt.Errorf("stop sing-box after timeout: %w", ctx.Err())
+		}
 		return m.Snapshot(), fmt.Errorf("stop sing-box: %w", ctx.Err())
 	}
 }

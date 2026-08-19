@@ -7,6 +7,7 @@ import { ThemeToggle } from './components/ThemeToggle'
 import { useEventStream } from './hooks/useEventStream'
 import { ConnectionView } from './views/ConnectionView'
 import { CoreView } from './views/CoreView'
+import { DnsView } from './views/DnsView'
 import { LinksView } from './views/LinksView'
 import { NodesView } from './views/NodesView'
 import { OverviewView } from './views/OverviewView'
@@ -80,6 +81,7 @@ function AuthenticatedApp({ onLogout }: { onLogout: () => void }) {
             {view === 'pools' && <PoolsView />}
             {view === 'rules' && <RulesView />}
             {view === 'traffic' && <TrafficPolicyView />}
+            {view === 'dns' && <DnsView />}
             {view === 'connection' && <ConnectionView />}
             {view === 'links' && <LinksView />}
             {view === 'core' && <CoreView />}
@@ -92,7 +94,7 @@ function AuthenticatedApp({ onLogout }: { onLogout: () => void }) {
 
 function viewFromHash(hash: string): ViewName {
   const value = hash.replace(/^#/, '')
-  return value === 'subscriptions' || value === 'nodes' || value === 'pools' || value === 'rules' || value === 'traffic' || value === 'connection' || value === 'links' || value === 'core'
+  return value === 'subscriptions' || value === 'nodes' || value === 'pools' || value === 'rules' || value === 'traffic' || value === 'connection' || value === 'links' || value === 'dns' || value === 'core'
     ? value
     : 'overview'
 }

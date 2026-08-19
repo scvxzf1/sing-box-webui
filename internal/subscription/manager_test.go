@@ -143,3 +143,125 @@ func TestDeleteRollsBackWhenRuleDeletionFails(t *testing.T) {
 		t.Fatal("subscription deletion was not rolled back")
 	}
 }
+
+func TestReorderPersistsSubscriptionOrder(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	manager := &Manager{
+		path: filepath.Join(directory, "subscriptions.json"),
+		items: []Subscription{
+			{ID: "sub-a", Name: "Alpha", URL: "https://a.example.com"},
+			{ID: "sub-b", Name: "Beta", URL: "https://b.example.com"},
+		},
+	}
+	if err := manager.persistLocked(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Reorder([]string{"sub-b", "sub-a"}); err != nil {
+		t.Fatalf("Reorder() error = %v", err)
+	}
+	if listed := manager.List(); len(listed) != 2 || listed[0].ID != "sub-b" || listed[1].ID != "sub-a" {
+		t.Fatalf("reordered subscriptions = %+v", listed)
+	}
+	reloaded := &Manager{path: manager.path}
+	if err := reloaded.load(); err != nil {
+		t.Fatal(err)
+	}
+	if listed := reloaded.List(); len(listed) != 2 || listed[0].ID != "sub-b" || listed[1].ID != "sub-a" {
+		t.Fatalf("persisted subscription order = %+v", listed)
+	}
+	if _, err := manager.Reorder([]string{"sub-a", "sub-a"}); err == nil {
+		t.Fatal("Reorder() accepted duplicate subscription IDs")
+	}
+}
+
+func TestRefreshFallsBackToProxyWhenDirectFails(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	manager := &Manager{
+		path:     filepath.Join(directory, "subscriptions.json"),
+		items:    []Subscription{{ID: "sub-1", Name: "Main", URL: "https://subscription.example.com", Nodes: []Node{}}},
+		fetcher:  fakeFetcher{err: errors.New("direct unreachable")},
+		events:   events.NewBroker(16, 4),
+		ruleSink: &fakeRuleSink{},
+	}
+	if err := manager.persistLocked(); err != nil {
+		t.Fatal(err)
+	}
+	manager.SetProxyResolver(func() string { return "127.0.0.1:2080" })
+	manager.proxyFetcher = fakeFetcher{content: []byte("trojan://secret@via-proxy.example.com:443?security=tls#Proxy")}
+	manager.proxyAddress = "127.0.0.1:2080"
+
+	if err := manager.Refresh(context.Background(), "sub-1"); err != nil {
+		t.Fatalf("Refresh() error = %v, want proxy fallback to succeed", err)
+	}
+	view, err := manager.Get("sub-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.NodeCount != 1 || view.Nodes[0].Server != "via-proxy.example.com" {
+		t.Fatalf("expected nodes from proxy fetch, got %+v", view.Nodes)
+	}
+	if view.LastFetchPath != "proxy" {
+		t.Fatalf("LastFetchPath = %q, want proxy", view.LastFetchPath)
+	}
+}
+
+func TestRefreshSkipsProxyWhenNoProxyAvailable(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	manager := &Manager{
+		path:    filepath.Join(directory, "subscriptions.json"),
+		items:   []Subscription{{ID: "sub-1", Name: "Main", URL: "https://subscription.example.com", Nodes: []Node{}}},
+		fetcher: fakeFetcher{err: errors.New("direct unreachable")},
+		events:  events.NewBroker(16, 4),
+	}
+	if err := manager.persistLocked(); err != nil {
+		t.Fatal(err)
+	}
+	// Resolver returns empty (TUN mode / proxy not running): no fallback.
+	manager.SetProxyResolver(func() string { return "" })
+
+	err := manager.Refresh(context.Background(), "sub-1")
+	if err == nil {
+		t.Fatal("Refresh() succeeded despite direct failure and no proxy")
+	}
+	if got := err.Error(); got != "direct unreachable" {
+		t.Fatalf("Refresh() error = %q, want the direct error only", got)
+	}
+	view, getErr := manager.Get("sub-1")
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if view.LastError != "direct unreachable" {
+		t.Fatalf("LastError = %q, want direct error recorded", view.LastError)
+	}
+}
+
+func TestMutationsRollBackWhenPersistenceFails(t *testing.T) {
+	t.Parallel()
+	manager := &Manager{
+		path: filepath.Join(t.TempDir(), "subscriptions.json"),
+		items: []Subscription{{
+			ID: "sub-1", Name: "Original", URL: "https://subscription.example.com",
+			Active: true, Nodes: []Node{{ID: "node-1", Name: "Node", Type: "trojan"}},
+		}},
+	}
+	if err := manager.persistLocked(); err != nil {
+		t.Fatal(err)
+	}
+	manager.path = filepath.Join(filepath.Dir(manager.path), "missing", "subscriptions.json")
+	name := "Changed"
+	if _, err := manager.Update("sub-1", UpdateInput{Name: &name}); err == nil {
+		t.Fatal("Update() succeeded with an unavailable store")
+	}
+	if got, _ := manager.Get("sub-1"); got.Name != "Original" {
+		t.Fatalf("Update() changed memory after persistence failure: %+v", got)
+	}
+	if _, err := manager.SelectNode("sub-1", "node-1"); err == nil {
+		t.Fatal("SelectNode() succeeded with an unavailable store")
+	}
+	if got, _ := manager.Get("sub-1"); got.SelectedNodeID != "" {
+		t.Fatalf("SelectNode() changed memory after persistence failure: %+v", got)
+	}
+}

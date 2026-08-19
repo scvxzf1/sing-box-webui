@@ -64,8 +64,8 @@ describe('LinksView', () => {
     vi.clearAllMocks()
     api.listLinks.mockResolvedValue(
       snapshot([
-        link({ id: 'a', host: 'a.example.com:443', download: 2048, downloadRate: 1024, node: 'Tokyo' }),
-        link({ id: 'b', host: 'b.example.com:443', download: 1024, downloadRate: 512, node: 'London' }),
+      link({ id: 'a', host: 'a.example.com:443', download: 2048, downloadRate: 1024, node: 'Tokyo' }),
+        link({ id: 'b', host: 'b.example.com:443', url: 'https://b.example.com/news', download: 1024, downloadRate: 512, node: 'London' }),
       ]),
     )
     api.clearLinks.mockResolvedValue(undefined)
@@ -77,6 +77,7 @@ describe('LinksView', () => {
     expect(screen.getByText('b.example.com:443')).toBeInTheDocument()
     expect(screen.getByText('Tokyo')).toBeInTheDocument()
     expect(screen.getByText('London')).toBeInTheDocument()
+    expect(screen.getByText('https://b.example.com/news')).toBeInTheDocument()
     // 2 KiB download and 1 KiB/s rate formatted.
     expect(screen.getByText('2.0 KiB')).toBeInTheDocument()
     expect(screen.getByText('1.0 KiB/s')).toBeInTheDocument()
@@ -106,6 +107,17 @@ describe('LinksView', () => {
     await waitFor(() => {
       const lastCall = api.listLinks.mock.calls.at(-1)?.[0]
       expect(lastCall.sort).toBe('download')
+    })
+  })
+
+  it('sorts by the reported URL or domain', async () => {
+    const user = userEvent.setup()
+    renderView()
+    const header = await screen.findByRole('button', { name: /网址 \/ 域名/ })
+    await user.click(header)
+    await waitFor(() => {
+      const lastCall = api.listLinks.mock.calls.at(-1)?.[0]
+      expect(lastCall.sort).toBe('-url')
     })
   })
 

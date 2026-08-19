@@ -7,8 +7,8 @@ if [[ "${EUID}" -eq 0 ]]; then
 fi
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-export SING_BOX_WEBUI_ADDR="${SING_BOX_WEBUI_ADDR:-127.0.0.1:11872}"
-export SING_BOX_WEBUI_DEV_ORIGIN="${SING_BOX_WEBUI_DEV_ORIGIN:-http://127.0.0.1:5173}"
+export SING_BOX_WEBUI_ADDR="${SING_BOX_WEBUI_ADDR:-127.0.0.1:33334}"
+export SING_BOX_WEBUI_DEV_ORIGIN="${SING_BOX_WEBUI_DEV_ORIGIN:-http://127.0.0.1:33333}"
 export SING_BOX_WEBUI_DEV_API="${SING_BOX_WEBUI_DEV_API:-http://${SING_BOX_WEBUI_ADDR}}"
 
 for command in go npm; do
@@ -39,7 +39,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 printf 'Go API: http://%s\n' "${SING_BOX_WEBUI_ADDR}"
-printf 'WebUI:  http://127.0.0.1:5173\n'
+printf 'WebUI:  http://127.0.0.1:33333\n'
 
 (
   cd "${ROOT_DIR}"

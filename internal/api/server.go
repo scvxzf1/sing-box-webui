@@ -16,6 +16,7 @@ import (
 	"sing-box-webui/internal/connectivity"
 	"sing-box-webui/internal/control"
 	"sing-box-webui/internal/core"
+	"sing-box-webui/internal/dnsprofile"
 	"sing-box-webui/internal/events"
 	"sing-box-webui/internal/latency"
 	"sing-box-webui/internal/nodepool"
@@ -43,6 +44,7 @@ type ServerConfig struct {
 	Subscriptions *subscription.Manager
 	Pools         *nodepool.Manager
 	Rules         *routing.Manager
+	DNS           *dnsprofile.Manager
 	Latency       LatencyTester
 	Control       *control.Service
 	Core          CoreController
@@ -60,6 +62,7 @@ type Server struct {
 	subscriptions *subscription.Manager
 	pools         *nodepool.Manager
 	rules         *routing.Manager
+	dns           *dnsprofile.Manager
 	latency       LatencyTester
 	control       *control.Service
 	core          CoreController
@@ -91,6 +94,7 @@ func NewServer(config ServerConfig) (*Server, error) {
 		subscriptions: config.Subscriptions,
 		pools:         config.Pools,
 		rules:         config.Rules,
+		dns:           config.DNS,
 		latency:       config.Latency,
 		control:       config.Control,
 		core:          config.Core,
@@ -156,12 +160,14 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/v1/events", s.eventStream)
 	mux.HandleFunc("/api/v1/session", s.session)
 	mux.HandleFunc("/api/v1/subscriptions", s.subscriptionsCollection)
+	mux.HandleFunc("/api/v1/subscriptions/order", s.subscriptionsOrder)
 	mux.HandleFunc("/api/v1/subscriptions/{id}", s.subscriptionItem)
 	mux.HandleFunc("/api/v1/subscriptions/{id}/refresh", s.refreshSubscription)
 	mux.HandleFunc("/api/v1/subscriptions/{id}/activate", s.activateSubscription)
 	mux.HandleFunc("/api/v1/subscriptions/{id}/selection", s.selectNode)
 	mux.HandleFunc("/api/v1/subscriptions/{id}/latency", s.testNodeLatency)
 	mux.HandleFunc("/api/v1/pools", s.poolsCollection)
+	mux.HandleFunc("/api/v1/pools/order", s.poolsOrder)
 	mux.HandleFunc("/api/v1/pools/{id}", s.poolItem)
 	mux.HandleFunc("/api/v1/rules", s.rulesCollection)
 	mux.HandleFunc("/api/v1/rules/order", s.rulesOrder)
@@ -175,6 +181,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/v1/links", s.links)
 	mux.HandleFunc("/api/v1/links/clear", s.clearLinks)
 	mux.HandleFunc("/api/v1/traffic-policy", s.trafficPolicyStatus)
+	mux.HandleFunc("/api/v1/dns/profile", s.dnsProfileResource)
 	mux.HandleFunc("/api/v1/connectivity", s.connectivityCollection)
 	mux.HandleFunc("/api/v1/connectivity/test", s.connectivityTest)
 	mux.HandleFunc("/api/v1/connectivity/diagnostic", s.connectivityDiagnostic)

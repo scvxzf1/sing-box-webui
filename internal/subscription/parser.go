@@ -154,7 +154,7 @@ func parseStandardURI(raw, scheme string) (Node, error) {
 		node.Password = node.Username
 		node.Username = ""
 	case "tuic":
-		node.UUID = node.Username
+		node.UUID = sanitizeTUICUUID(node.Username)
 		node.Username = ""
 	}
 
@@ -482,7 +482,55 @@ func nodeFromOutbound(outbound map[string]any) (Node, error) {
 			}
 		}
 	}
+	if nodeType == "tuic" {
+		node.UUID = sanitizeTUICUUID(node.UUID)
+	}
 	return node, validateNode(node)
+}
+
+// sanitizeTUICUUID cleans a TUIC user identifier that may carry a trailing
+// ":userId" segment (e.g. "uuid:uuid") into the standard 36-char UUID string
+// sing-box requires for the tuic outbound. It returns the first colon-separated
+// segment that is a valid UUIDv4 canonical form, or the original value unchanged.
+func sanitizeTUICUUID(value string) string {
+	if value == "" || !strings.Contains(value, ":") {
+		return value
+	}
+	for _, part := range strings.Split(value, ":") {
+		if isCanonicalUUID(part) {
+			return part
+		}
+	}
+	return value
+}
+
+// isCanonicalUUID reports whether s is a canonical UUID in the
+// 8-4-4-4-12 form (36 characters with hyphens).
+func isCanonicalUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	groups := []int{8, 4, 4, 4, 12}
+	index := 0
+	for _, group := range groups {
+		if index != 0 && (index >= len(s) || s[index] != '-') {
+			return false
+		}
+		if index != 0 {
+			index++
+		}
+		end := index + group
+		if end > len(s) {
+			return false
+		}
+		for ; index < end; index++ {
+			c := s[index]
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+				return false
+			}
+		}
+	}
+	return index == len(s)
 }
 
 func validateNode(node Node) error {

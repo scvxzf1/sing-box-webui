@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { NodePool } from '../api/types'
@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   createNodePool: vi.fn(),
   deleteNodePool: vi.fn(),
   listNodePools: vi.fn(),
+  reorderNodePools: vi.fn(),
   testNodeLatency: vi.fn(),
   updateNodePool: vi.fn(),
 }))
@@ -36,6 +37,7 @@ describe('PoolsView', () => {
     api.listNodePools.mockResolvedValue([pool])
     api.testNodeLatency.mockResolvedValue({ items: [{ nodeId: 'node-a', name: 'Tokyo', status: 'ok', latencyMs: 36 }] })
     api.updateNodePool.mockResolvedValue(pool)
+    api.reorderNodePools.mockResolvedValue([pool])
   })
 
   it('restores and persists the pool member grid preference', async () => {
@@ -106,5 +108,64 @@ describe('PoolsView', () => {
       maxBackoffSeconds: 600,
       interruptExistingConnections: true,
     })))
+  })
+
+  it('filters pool members by the search box', async () => {
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><PoolsView /></QueryClientProvider>)
+
+    expect(await screen.findByText('Tokyo')).toBeInTheDocument()
+    const search = screen.getByLabelText('搜索池内节点')
+    await user.type(search, 'london')
+    expect(screen.queryByText('Tokyo')).not.toBeInTheDocument()
+    expect(screen.getByText('London')).toBeInTheDocument()
+
+    await user.clear(search)
+    await user.type(search, 'beta')
+    expect(screen.getByText('London')).toBeInTheDocument()
+
+    await user.clear(search)
+    await user.type(search, '不存在')
+    expect(screen.getByText('没有匹配“不存在”的节点')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '清除搜索' }))
+    expect(screen.getByText('Tokyo')).toBeInTheDocument()
+    expect(screen.getByText('London')).toBeInTheDocument()
+  })
+
+  it('previews and persists a dragged pool position', async () => {
+    const secondPool = { ...pool, id: 'pool-2', name: 'Backup' }
+    api.listNodePools.mockResolvedValue([pool, secondPool])
+    api.reorderNodePools.mockResolvedValue([secondPool, pool])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><PoolsView /></QueryClientProvider>)
+
+    const firstRow = await screen.findByRole('button', { name: /Daily/ })
+    const secondRow = screen.getByRole('button', { name: /Backup/ })
+    const dataTransfer = { effectAllowed: '', dropEffect: '', setData: vi.fn(), getData: vi.fn(() => 'pool-1') }
+    fireEvent.dragStart(firstRow, { dataTransfer })
+    fireEvent.dragOver(secondRow, { dataTransfer, clientY: -1 })
+    expect(secondRow).toHaveClass('pool-row--drop-after')
+    fireEvent.drop(secondRow, { dataTransfer })
+
+    await waitFor(() => expect(api.reorderNodePools.mock.calls[0]?.[0]).toEqual(['pool-2', 'pool-1']))
+  })
+
+  it('ignores a drop whose target does not match the current indicator', async () => {
+    const secondPool = { ...pool, id: 'pool-2', name: 'Backup' }
+    const thirdPool = { ...pool, id: 'pool-3', name: 'Emergency' }
+    api.listNodePools.mockResolvedValue([pool, secondPool, thirdPool])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><PoolsView /></QueryClientProvider>)
+
+    const firstRow = await screen.findByRole('button', { name: /Daily/ })
+    const secondRow = screen.getByRole('button', { name: /Backup/ })
+    const thirdRow = screen.getByRole('button', { name: /Emergency/ })
+    const dataTransfer = { effectAllowed: '', dropEffect: '', setData: vi.fn(), getData: vi.fn(() => 'pool-1') }
+    fireEvent.dragStart(firstRow, { dataTransfer })
+    fireEvent.dragOver(secondRow, { dataTransfer, clientY: -1 })
+    fireEvent.drop(thirdRow, { dataTransfer })
+
+    expect(api.reorderNodePools).not.toHaveBeenCalled()
   })
 })

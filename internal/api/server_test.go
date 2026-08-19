@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"sing-box-webui/internal/dnsprofile"
 	"sing-box-webui/internal/events"
 	"sing-box-webui/internal/latency"
 	"sing-box-webui/internal/routing"
@@ -80,6 +81,14 @@ func TestWebAuthentication(t *testing.T) {
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("invalid login status = %d, want 401", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "http://127.0.0.1:11872/api/v1/auth/login", strings.NewReader(`{"token":"test-token-with-32-characters-value","extra":true}`))
+	request.Header.Set("Origin", "http://127.0.0.1:5173")
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("login with unknown field status = %d, want 400", response.Code)
 	}
 
 	request = httptest.NewRequest(http.MethodPost, "http://127.0.0.1:11872/api/v1/auth/login", strings.NewReader(`{"token":"test-token-with-32-characters-value"}`))
@@ -305,6 +314,56 @@ func TestRulePoolsEndpointAtomicallyReplacesPoolRules(t *testing.T) {
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusUnprocessableEntity || len(rules.ListPools()[0].Rules) != 1 {
 		t.Fatalf("invalid replacement status=%d pools=%#v", response.Code, rules.ListPools())
+	}
+}
+
+func TestDnsProfileEndpointRoundTrip(t *testing.T) {
+	t.Parallel()
+	dns, err := dnsprofile.OpenManager(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(ServerConfig{
+		Address: "127.0.0.1:11872", DevOrigin: "http://127.0.0.1:5173", DNS: dns,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:11872/api/v1/dns/profile", nil)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	var profile dnsprofile.Profile
+	if err := json.NewDecoder(response.Body).Decode(&profile); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || len(profile.Servers) != 1 || profile.Servers[0].Tag != "dns-google" || profile.Strategy != "prefer_ipv4" {
+		t.Fatalf("GET status=%d profile=%+v", response.Code, profile)
+	}
+
+	request = httptest.NewRequest(http.MethodPut, "http://127.0.0.1:11872/api/v1/dns/profile", strings.NewReader(`{"servers":[{"tag":"dns-alibaba","type":"udp","server":"223.5.5.5"}],"final":"dns-alibaba","strategy":"ipv4_only","fakeIP":{"enabled":true}}`))
+	request.Header.Set("Origin", "http://127.0.0.1:5173")
+	request.Header.Set("X-CSRF-Token", server.csrfToken)
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if err := json.NewDecoder(response.Body).Decode(&profile); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || profile.Final != "dns-alibaba" || !profile.FakeIP.Enabled || profile.FakeIP.Inet4Range != "198.18.0.0/15" {
+		t.Fatalf("PUT status=%d profile=%+v body-check failed", response.Code, profile)
+	}
+
+	request = httptest.NewRequest(http.MethodPut, "http://127.0.0.1:11872/api/v1/dns/profile", strings.NewReader(`{"servers":[],"final":"","strategy":"prefer_ipv4","fakeIP":{"enabled":false}}`))
+	request.Header.Set("Origin", "http://127.0.0.1:5173")
+	request.Header.Set("X-CSRF-Token", server.csrfToken)
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	var errorResponse errorBody
+	if err := json.NewDecoder(response.Body).Decode(&errorResponse); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusUnprocessableEntity || errorResponse.Error.Code != "dns_profile_invalid" {
+		t.Fatalf("invalid PUT status=%d body=%+v", response.Code, errorResponse)
 	}
 }
 

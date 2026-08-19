@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -29,7 +30,12 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
 	var input loginRequest
 	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
+		writeError(w, r, http.StatusBadRequest, "request_invalid", "The request body is invalid")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		writeError(w, r, http.StatusBadRequest, "request_invalid", "The request body is invalid")
 		return
 	}

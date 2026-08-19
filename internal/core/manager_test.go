@@ -146,6 +146,31 @@ func TestUpdateRejectsDigestMismatchWithoutSwitching(t *testing.T) {
 	assertBinaryVersion(t, manager.BinaryPath(), "1.0.0")
 }
 
+func TestExtractReleaseArchiveRejectsUncompressedSizeLimit(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("archive layout is platform-specific")
+	}
+	var archive bytes.Buffer
+	gzipWriter := gzip.NewWriter(&archive)
+	tarWriter := tar.NewWriter(gzipWriter)
+	if err := tarWriter.WriteHeader(&tar.Header{
+		Name: archiveRoot("2.0.0") + "/ignored", Typeflag: tar.TypeReg,
+		Size: maxExtractedSize + 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(t.TempDir(), "release.tar.gz")
+	if err := os.WriteFile(archivePath, archive.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := extractReleaseArchive(archivePath, t.TempDir(), "2.0.0"); err == nil || !strings.Contains(err.Error(), "uncompressed content") {
+		t.Fatalf("extractReleaseArchive() error = %v, want size limit error", err)
+	}
+}
+
 func newTestManager(t *testing.T, version string) *Manager {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "core")

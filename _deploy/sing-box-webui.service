@@ -1,0 +1,14 @@
+[Unit]
+Description=sing-box WebUI (Go backend on 127.0.0.1:33334 + nginx on 9909)
+After=default.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=%h/apps/sing-box-webui
+ExecStart=%h/apps/sing-box-webui/start.sh
+ExecStop=%h/apps/sing-box-webui/stop.sh
+TimeoutStartSec=180
+
+[Install]
+WantedBy=default.target

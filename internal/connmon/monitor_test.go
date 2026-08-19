@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -97,20 +98,54 @@ func TestMonitorTracksConnectionsAndResolvesNode(t *testing.T) {
 	if got := byID["a"].Host; got != "example.com:443" {
 		t.Errorf("unexpected host render %q", got)
 	}
+	if got := byID["a"].URL; got != "example.com" {
+		t.Errorf("unexpected URL render %q", got)
+	}
 	if snap.Stats.Active != 2 {
 		t.Errorf("active = %d, want 2", snap.Stats.Active)
 	}
 }
 
+func TestMonitorUsesDestinationIPWhenHostIsUnavailable(t *testing.T) {
+	ipOnly := connection("ip-only", "", 1, 1, "proxy")
+	metadata := ipOnly["metadata"].(map[string]any)
+	metadata["destinationIP"] = "203.0.113.7"
+
+	address, secret, closeFn := clashServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/version" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"uploadTotal": 1, "downloadTotal": 1, "connections": []map[string]any{ipOnly},
+		})
+	})
+	defer closeFn()
+
+	monitor := New(nil)
+	monitor.Start(address, secret, nil)
+	defer monitor.Stop()
+
+	waitFor(t, func() bool { return len(monitor.Query(Query{}).Links) == 1 })
+	link := monitor.Query(Query{}).Links[0]
+	if link.Host != "203.0.113.7:443" {
+		t.Errorf("unexpected IP fallback host %q", link.Host)
+	}
+	if link.URL != "" {
+		t.Errorf("IP fallback should not invent a URL, got %q", link.URL)
+	}
+}
+
 func TestMonitorMarksClosedConnections(t *testing.T) {
-	showBoth := true
+	var showBoth atomic.Bool
+	showBoth.Store(true)
 	address, secret, closeFn := clashServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/version" {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		connections := []map[string]any{connection("a", "a.com", 1, 1, "proxy", "pool-member-001")}
-		if showBoth {
+		if showBoth.Load() {
 			connections = append(connections, connection("b", "b.com", 1, 1, "proxy", "pool-member-001"))
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"uploadTotal": 2, "downloadTotal": 2, "connections": connections})
@@ -122,7 +157,7 @@ func TestMonitorMarksClosedConnections(t *testing.T) {
 	defer monitor.Stop()
 
 	waitFor(t, func() bool { return len(monitor.Query(Query{}).Links) == 2 })
-	showBoth = false
+	showBoth.Store(false)
 	waitFor(t, func() bool {
 		snap := monitor.Query(Query{})
 		for _, l := range snap.Links {
@@ -166,7 +201,7 @@ func TestMonitorEvictsAtCapacity(t *testing.T) {
 func TestQuerySearchAndSort(t *testing.T) {
 	monitor := New(nil)
 	monitor.links = map[string]*Link{
-		"1": {ID: "1", Host: "beta.com", Node: "NodeA", Download: 10, Active: true},
+		"1": {ID: "1", Host: "beta.com", URL: "https://beta.com", Node: "NodeA", Download: 10, Active: true},
 		"2": {ID: "2", Host: "alpha.com", Node: "NodeB", Download: 99, Active: true},
 		"3": {ID: "3", Host: "gamma.io", Node: "NodeA", Download: 50, Active: false},
 	}
@@ -175,6 +210,12 @@ func TestQuerySearchAndSort(t *testing.T) {
 	snap := monitor.Query(Query{Search: "alpha"})
 	if len(snap.Links) != 1 || snap.Links[0].Host != "alpha.com" {
 		t.Fatalf("search by host failed: %+v", snap.Links)
+	}
+
+	// Search by reported URL/domain.
+	snap = monitor.Query(Query{Search: "https://beta.com"})
+	if len(snap.Links) != 1 || snap.Links[0].URL != "https://beta.com" {
+		t.Fatalf("search by URL failed: %+v", snap.Links)
 	}
 
 	// Search by node name.

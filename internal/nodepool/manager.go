@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -148,8 +147,47 @@ func (m *Manager) List() []View {
 	for _, item := range items {
 		views = append(views, m.toView(item))
 	}
-	sort.Slice(views, func(i, j int) bool { return strings.ToLower(views[i].Name) < strings.ToLower(views[j].Name) })
 	return views
+}
+
+func (m *Manager) Reorder(ids []string) ([]View, error) {
+	m.mu.Lock()
+	if len(ids) != len(m.items) {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("order must include every node pool exactly once")
+	}
+	indices := make(map[string]int, len(m.items))
+	for index, item := range m.items {
+		indices[item.ID] = index
+	}
+	seen := make(map[string]struct{}, len(ids))
+	ordered := make([]Pool, len(ids))
+	for position, id := range ids {
+		index, exists := indices[id]
+		if !exists {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("order contains an unknown node pool")
+		}
+		if _, duplicate := seen[id]; duplicate {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("order contains a duplicate node pool")
+		}
+		seen[id] = struct{}{}
+		ordered[position] = m.items[index]
+	}
+	previous := m.items
+	m.items = ordered
+	if err := m.persistLocked(); err != nil {
+		m.items = previous
+		m.mu.Unlock()
+		return nil, err
+	}
+	views := make([]View, 0, len(m.items))
+	for _, item := range m.items {
+		views = append(views, m.toView(item))
+	}
+	m.mu.Unlock()
+	return views, nil
 }
 
 func (m *Manager) Get(id string) (View, error) {

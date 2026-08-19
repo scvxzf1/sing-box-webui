@@ -1,21 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, FolderPlus, Gauge, LoaderCircle, LockKeyhole, Search, X } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { Check, ChevronLeft, ChevronRight, FolderPlus, Gauge, LoaderCircle, LockKeyhole, Search, X } from 'lucide-react'
 import { getSubscription, listNodePools, listSubscriptions, selectNode, testNodeLatency, updateNodePool } from '../api/client'
 import type { LatencyResult, Node, NodePool } from '../api/types'
 import { InlineError } from '../components/InlineError'
 import { PageHeading } from '../components/PageHeading'
 
 type GridColumns = 1 | 2 | 3 | 4
+type PageSize = 48 | 72 | 96 | 144
 
 const gridColumnsStorageKey = 'sing-box-webui:nodes-grid-columns'
+const pageSizeStorageKey = 'sing-box-webui:nodes-page-size'
 const maxConcurrentManualTests = 4
+const pageSizeOptions: PageSize[] = [48, 72, 96, 144]
 
 export function NodesView() {
   const queryClient = useQueryClient()
   const [subscriptionId, setSubscriptionId] = useState('')
   const [search, setSearch] = useState('')
   const [gridColumns, setGridColumns] = useState<GridColumns>(readGridColumns)
+  const [pageSize, setPageSize] = useState<PageSize>(readPageSize)
+  const [page, setPage] = useState(0)
   const [latencyResults, setLatencyResults] = useState<Record<string, LatencyResult>>({})
   const [testingIDs, setTestingIDs] = useState<Set<string>>(new Set())
   const [latencyError, setLatencyError] = useState<unknown>(null)
@@ -27,6 +33,7 @@ export function NodesView() {
   const subscriptionsQuery = useQuery({
     queryKey: ['subscriptions'],
     queryFn: ({ signal }) => listSubscriptions(signal),
+    refetchOnMount: 'always',
   })
   const poolsQuery = useQuery({ queryKey: ['pools'], queryFn: ({ signal }) => listNodePools(signal) })
 
@@ -48,6 +55,14 @@ export function NodesView() {
       // The layout still works when browser storage is unavailable.
     }
   }, [gridColumns])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(pageSizeStorageKey, String(pageSize))
+    } catch {
+      // The layout still works when browser storage is unavailable.
+    }
+  }, [pageSize])
 
   useEffect(() => {
     setLatencyResults({})
@@ -122,21 +137,28 @@ export function NodesView() {
     )
   }, [detailQuery.data?.nodes, search])
   const allNodes = detailQuery.data?.nodes ?? []
-  const isTestingAll = allNodes.length > 0 && allNodes.every((node) => testingIDs.has(node.id))
+  const pageCount = Math.max(1, Math.ceil(nodes.length / pageSize))
+  const currentPage = Math.min(page, pageCount - 1)
+  const pageNodes = nodes.slice(currentPage * pageSize, currentPage * pageSize + pageSize)
   const selectedNodes = allNodes.filter((node) => selectedNodeIDs.has(node.id))
-  const selectedVisibleCount = nodes.filter((node) => selectedNodeIDs.has(node.id)).length
-  const allVisibleSelected = nodes.length > 0 && selectedVisibleCount === nodes.length
+  const selectedPageCount = pageNodes.filter((node) => selectedNodeIDs.has(node.id)).length
+  const allPageSelected = pageNodes.length > 0 && selectedPageCount === pageNodes.length
+  const isTestingAllSelected = selectedNodes.length > 0 && selectedNodes.every((node) => testingIDs.has(node.id))
+
+  useEffect(() => {
+    setPage(0)
+  }, [search, subscriptionId, pageSize])
 
   useEffect(() => {
     if (selectAllRef.current) {
-      selectAllRef.current.indeterminate = selectedVisibleCount > 0 && !allVisibleSelected
+      selectAllRef.current.indeterminate = selectedPageCount > 0 && !allPageSelected
     }
-  }, [allVisibleSelected, selectedVisibleCount])
+  }, [allPageSelected, selectedPageCount])
 
-  const toggleVisibleNodes = (checked: boolean) => {
+  const togglePageNodes = (checked: boolean) => {
     setSelectedNodeIDs((current) => {
       const next = new Set(current)
-      for (const node of nodes) {
+      for (const node of pageNodes) {
         if (checked) next.add(node.id)
         else next.delete(node.id)
       }
@@ -183,11 +205,11 @@ export function NodesView() {
             <input
               ref={selectAllRef}
               type="checkbox"
-              checked={allVisibleSelected}
-              disabled={!nodes.length}
-              onChange={(event) => toggleVisibleNodes(event.target.checked)}
+              checked={allPageSelected}
+              disabled={!pageNodes.length}
+              onChange={(event) => togglePageNodes(event.target.checked)}
             />
-            <span>全选当前</span>
+            <span>全选当前页</span>
           </label>
           <span className="node-count">{selectedNodeIDs.size ? `已选 ${selectedNodeIDs.size} · ` : ''}{nodes.length} 个节点</span>
           <button
@@ -201,15 +223,15 @@ export function NodesView() {
           <button
             className="button"
             type="button"
-            disabled={!allNodes.length || testingIDs.size > 0}
-            onClick={() => void testNodes(allNodes.map((node) => node.id))}
+            disabled={!selectedNodes.length || testingIDs.size > 0}
+            onClick={() => void testNodes(selectedNodes.map((node) => node.id))}
           >
-            {isTestingAll ? (
+            {isTestingAllSelected ? (
               <LoaderCircle className="spin" size={16} aria-hidden="true" />
             ) : (
               <Gauge size={16} aria-hidden="true" />
             )}
-            {isTestingAll ? '测试中' : '测试全部'}
+            {isTestingAllSelected ? '测试中' : `测试所选${selectedNodes.length ? ` (${selectedNodes.length})` : ''}`}
           </button>
         </div>
       </section>
@@ -224,7 +246,7 @@ export function NodesView() {
           <div className="loading-state">正在读取节点</div>
         ) : nodes.length ? (
           <div className={`node-grid node-grid--${gridColumns}`} role="list">
-            {nodes.map((node) => {
+            {pageNodes.map((node) => {
               const result = latencyResults[node.id]
               const isTesting = testingIDs.has(node.id)
               return (
@@ -302,8 +324,45 @@ export function NodesView() {
         ) : (
           <div className="empty-state">当前订阅没有可用节点</div>
         )}
+        {nodes.length > 0 && (
+          <div className="node-pagination">
+            <span className="node-count">第 {currentPage + 1} / {pageCount} 页</span>
+            <div className="node-pagination-controls">
+              <button
+                className="icon-button"
+                type="button"
+                aria-label="上一页"
+                disabled={currentPage === 0}
+                onClick={() => setPage(currentPage - 1)}
+              >
+                <ChevronLeft size={16} aria-hidden="true" />
+              </button>
+              <button
+                className="icon-button"
+                type="button"
+                aria-label="下一页"
+                disabled={currentPage >= pageCount - 1}
+                onClick={() => setPage(currentPage + 1)}
+              >
+                <ChevronRight size={16} aria-hidden="true" />
+              </button>
+            </div>
+            <label className="node-page-size">
+              <span>每页</span>
+              <select
+                aria-label="每页节点数"
+                value={pageSize}
+                onChange={(event) => setPageSize(Number(event.target.value) as PageSize)}
+              >
+                {pageSizeOptions.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+        )}
       </section>
-      {addTargets.length > 0 && (
+      {addTargets.length > 0 && createPortal(
         <div className="modal-backdrop">
           <section className="pool-picker" role="dialog" aria-modal="true" aria-labelledby="pool-picker-title">
             <div className="pool-picker-heading">
@@ -312,7 +371,8 @@ export function NodesView() {
             </div>
             <div className="pool-picker-list">
               {(poolsQuery.data ?? []).map((pool) => {
-                const includedCount = addTargets.filter((node) => pool.members.some((member) => member.subscriptionId === subscriptionId && member.nodeId === node.id)).length
+                const members = pool.members ?? []
+                const includedCount = addTargets.filter((node) => members.some((member) => member.subscriptionId === subscriptionId && member.nodeId === node.id)).length
                 const allIncluded = includedCount === addTargets.length
                 return (
                   <button className="pool-picker-row" type="button" key={pool.id} disabled={allIncluded || addToPoolMutation.isPending} onClick={() => addToPoolMutation.mutate({ pool, nodes: addTargets, targetSubscriptionID: subscriptionId })}>
@@ -324,7 +384,8 @@ export function NodesView() {
               {!poolsQuery.data?.length && <div className="pool-picker-empty"><span>还没有节点池</span><button className="button" type="button" onClick={() => { window.location.hash = '#pools' }}>新建节点池</button></div>}
             </div>
           </section>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   )
@@ -338,6 +399,16 @@ function readGridColumns(): GridColumns {
     // Ignore unavailable browser storage and use the default.
   }
   return 2
+}
+
+function readPageSize(): PageSize {
+  try {
+    const value = Number(window.localStorage.getItem(pageSizeStorageKey))
+    if (value === 48 || value === 72 || value === 96 || value === 144) return value
+  } catch {
+    // Ignore unavailable browser storage and use the default.
+  }
+  return 48
 }
 
 function memberKey(subscriptionId: string, nodeId: string) {

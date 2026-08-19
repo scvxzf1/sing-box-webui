@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Gauge, Loader2, Play, Plus, Trash2 } from 'lucide-react'
 import {
@@ -12,8 +12,11 @@ import type { ConnectivityPathResult, ConnectivityResult } from '../api/types'
 import { InlineError } from '../components/InlineError'
 
 type ResultMap = Record<string, ConnectivityResult>
+type QuickTestColumns = 1 | 2 | 3 | 4
 
-export function QuickTest() {
+const columnsStorageKey = 'sing-box-webui:quick-test-columns'
+
+export function QuickTest({ step }: { step: number }) {
   const queryClient = useQueryClient()
   const targetsQuery = useQuery({ queryKey: ['connectivity'], queryFn: ({ signal }) => listConnectivityTargets(signal) })
   const [results, setResults] = useState<ResultMap>({})
@@ -23,6 +26,15 @@ export function QuickTest() {
   const [name, setName] = useState('')
   const [url, setUrl] = useState('')
   const [testError, setTestError] = useState<unknown>(null)
+  const [columns, setColumns] = useState<QuickTestColumns>(readColumns)
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(columnsStorageKey, String(columns))
+    } catch {
+      // The layout still works when browser storage is unavailable.
+    }
+  }, [columns])
 
   const mergeResults = (items: ConnectivityResult[]) => {
     setResults((previous) => {
@@ -82,12 +94,25 @@ export function QuickTest() {
   const busy = testingAll || testingIds.size > 0
 
   return (
-    <div className="connection-step">
-      <span className="step-index">4</span>
+    <div className="connection-step connection-step--full">
+      <span className="step-index">{step}</span>
       <div className="quick-test">
         <div className="quick-test__head">
           <h2><Gauge size={16} aria-hidden="true" /> 快速测试</h2>
           <div className="quick-test__actions">
+            <label className="quick-test__columns">
+              <span>每行列数</span>
+              <select
+                aria-label="每行列数"
+                value={columns}
+                onChange={(event) => setColumns(Number(event.target.value) as QuickTestColumns)}
+              >
+                <option value={1}>1 列</option>
+                <option value={2}>2 列</option>
+                <option value={3}>3 列</option>
+                <option value={4}>4 列</option>
+              </select>
+            </label>
             <button
               className="button button--ghost button--sm"
               type="button"
@@ -144,7 +169,7 @@ export function QuickTest() {
         ) : targets.length === 0 ? (
           <div className="muted-line">暂无测试目标，点击"添加"创建一个</div>
         ) : (
-          <ul className="quick-test__list">
+          <ul className={`quick-test__list quick-test__list--${columns}`}>
             {targets.map((target) => {
               const result = results[target.id]
               const testing = testingIds.has(target.id)
@@ -208,4 +233,14 @@ function PathBadge({ label, value }: { label: string; value: ConnectivityPathRes
       {label} {value.status === 'timeout' ? '超时' : '失败'}
     </span>
   )
+}
+
+function readColumns(): QuickTestColumns {
+  try {
+    const value = Number(window.localStorage.getItem(columnsStorageKey))
+    if (value === 1 || value === 2 || value === 3 || value === 4) return value
+  } catch {
+    // Ignore unavailable browser storage and use the default.
+  }
+  return 1
 }

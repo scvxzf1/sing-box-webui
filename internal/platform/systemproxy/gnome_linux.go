@@ -88,7 +88,7 @@ func (c *GNOMEController) Apply(ctx context.Context, host string, port uint16) e
 		{Schema: "org.gnome.system.proxy.https", Key: "port", Value: portValue},
 		{Schema: "org.gnome.system.proxy.socks", Key: "host", Value: host},
 		{Schema: "org.gnome.system.proxy.socks", Key: "port", Value: portValue},
-		{Schema: "org.gnome.system.proxy", Key: "ignore-hosts", Value: "['localhost', '127.0.0.0/8', '::1']"},
+		{Schema: "org.gnome.system.proxy", Key: "ignore-hosts", Value: "['localhost', '127.0.0.0/8', '::1', '192.168.0.0/16', '10.0.0.0/8', '172.16.0.0/12', '*.local']"},
 		{Schema: "org.gnome.system.proxy", Key: "mode", Value: "manual"},
 	}
 	for _, change := range changes {

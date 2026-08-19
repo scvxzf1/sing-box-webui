@@ -14,7 +14,7 @@ import (
 //   - search: substring match across host/node/network/type/chain (case-insensitive)
 //   - active: "true"/"false" to filter to live or closed connections
 //   - sort:   comma-separated keys, "-key" for descending
-//     (host,node,upload,download,uploadRate,downloadRate,startedAt)
+//     (host,url,node,upload,download,uploadRate,downloadRate,startedAt)
 //   - offset, limit: pagination
 func (s *Server) links(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -83,7 +83,7 @@ func parseOrdering(raw string) []connmon.Ordering {
 
 func validSortKey(key connmon.SortKey) bool {
 	switch key {
-	case connmon.SortHost, connmon.SortNode, connmon.SortUpload, connmon.SortDownload,
+	case connmon.SortHost, connmon.SortURL, connmon.SortNode, connmon.SortUpload, connmon.SortDownload,
 		connmon.SortUploadRate, connmon.SortDownloadRate, connmon.SortStartedAt:
 		return true
 	default:

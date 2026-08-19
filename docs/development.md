@@ -103,6 +103,11 @@ HttpOnly、SameSite=Strict 的短期会话 Cookie，不把令牌写入 Web Stora
 `sing-box-webui:nodes-grid-columns` 键中。该值只包含非敏感界面偏好，可跨浏览器
 重启保留；订阅地址、节点凭据和运行配置不得写入 `localStorage`。
 
+连接页的目标类型、订阅选项和节点池选项分别保存在
+`sing-box-webui:connection-target-type`、`sing-box-webui:connection-subscription-id`
+和 `sing-box-webui:connection-pool-id`。后两者只保存不透明 ID，不包含订阅地址、
+节点配置或运行参数；已删除的 ID 会在列表加载后自动回退到有效选项。
+
 `POST /api/v1/subscriptions/{id}/latency` 支持单节点或批量手动测试，默认使用托管
 sing-box 核心。后端生成隔离的临时 sing-box 配置，通过各节点真实出站访问
 `https://cp.cloudflare.com/generate_204`。每个出站映射到独立的随机回环 mixed 入站，

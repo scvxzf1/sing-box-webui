@@ -12,6 +12,7 @@ import (
 
 	"sing-box-webui/internal/configstore"
 	"sing-box-webui/internal/connmon"
+	"sing-box-webui/internal/dnsprofile"
 	"sing-box-webui/internal/events"
 	"sing-box-webui/internal/nodepool"
 	"sing-box-webui/internal/platform/systemproxy"
@@ -42,6 +43,7 @@ type Runtime struct {
 	NodeName       string               `json:"nodeName,omitempty"`
 	PoolID         string               `json:"poolId,omitempty"`
 	PoolName       string               `json:"poolName,omitempty"`
+	AllowLan       bool                 `json:"allowLan,omitempty"`
 	StartedAt      time.Time            `json:"startedAt,omitempty"`
 	LastError      string               `json:"lastError,omitempty"`
 	Capabilities   Capabilities         `json:"capabilities"`
@@ -53,6 +55,7 @@ type ApplyInput struct {
 	NodeID         string            `json:"nodeId,omitempty"`
 	PoolID         string            `json:"poolId,omitempty"`
 	Mode           singbox.ProxyMode `json:"mode"`
+	AllowLan       bool              `json:"allowLan"`
 }
 
 type Service struct {
@@ -61,6 +64,7 @@ type Service struct {
 	subscriptions *subscription.Manager
 	pools         *nodepool.Manager
 	rules         *routing.Manager
+	dns           *dnsprofile.Manager
 	client        *singbox.Client
 	configStore   *configstore.Store
 	supervisor    *supervisor.Manager
@@ -77,6 +81,7 @@ type Config struct {
 	Subscriptions *subscription.Manager
 	Pools         *nodepool.Manager
 	Rules         *routing.Manager
+	DNS           *dnsprofile.Manager
 	Client        *singbox.Client
 	ConfigStore   *configstore.Store
 	Supervisor    *supervisor.Manager
@@ -91,6 +96,7 @@ func New(config Config) *Service {
 		subscriptions: config.Subscriptions,
 		pools:         config.Pools,
 		rules:         config.Rules,
+		dns:           config.DNS,
 		client:        config.Client,
 		configStore:   config.ConfigStore,
 		supervisor:    config.Supervisor,
@@ -149,6 +155,10 @@ func (s *Service) Apply(ctx context.Context, input ApplyInput) (Runtime, error) 
 			return s.Status(ctx), err
 		}
 	}
+	dnsProfile := dnsprofile.DefaultProfile()
+	if s.dns != nil {
+		dnsProfile = s.dns.Get()
+	}
 
 	var content []byte
 	var target Runtime
@@ -172,12 +182,12 @@ func (s *Service) Apply(ctx context.Context, input ApplyInput) (Runtime, error) 
 			return s.Status(ctx), controllerErr
 		}
 		controllerAddress, controllerSecret = addr, secret
-		content, err = singbox.BuildPoolConfigWithRules(nodes, input.Mode, s.mixedPort, singbox.URLTestOptions{
+		content, err = singbox.BuildPoolConfigWithDNS(nodes, input.Mode, s.mixedPort, singbox.URLTestOptions{
 			URL: pool.ProbeURL, Interval: time.Duration(pool.ProbeIntervalSeconds) * time.Second,
 			Tolerance: pool.ToleranceMS, IdleTimeout: time.Duration(pool.IdleTimeoutSeconds) * time.Second,
 			InterruptExistingConnections: pool.InterruptExistingConnections,
 			ControllerAddress:            controllerAddress, ControllerSecret: controllerSecret,
-		}, routeRules)
+		}, routeRules, dnsProfile, input.AllowLan)
 		probeURLs := append([]string{pool.ProbeURL}, pool.FallbackProbeURLs...)
 		targets := make([]poolhealth.Target, len(nodes))
 		namesByTag := make(map[string]string, len(nodes))
@@ -221,7 +231,7 @@ func (s *Service) Apply(ctx context.Context, input ApplyInput) (Runtime, error) 
 		controllerAddress, controllerSecret = addr, secret
 		content, err = singbox.BuildConfigWithController(node, input.Mode, s.mixedPort, routeRules, singbox.ControllerOptions{
 			Address: controllerAddress, Secret: controllerSecret,
-		})
+		}, dnsProfile, input.AllowLan)
 		connResolver = nodeChainResolver(node.Name)
 		target = Runtime{TargetType: "node", SubscriptionID: subscriptionValue.ID, NodeID: node.ID, NodeName: node.Name}
 	}
@@ -256,7 +266,11 @@ func (s *Service) Apply(ctx context.Context, input ApplyInput) (Runtime, error) 
 		return s.recordFailure(ctx, err), err
 	}
 	if input.Mode == singbox.ModeSystemProxy {
-		if err := s.systemProxy.Apply(ctx, "127.0.0.1", s.mixedPort); err != nil {
+		proxyHost := "127.0.0.1"
+		if input.AllowLan {
+			proxyHost = "0.0.0.0"
+		}
+		if err := s.systemProxy.Apply(ctx, proxyHost, s.mixedPort); err != nil {
 			stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_, _ = s.supervisor.Stop(stopCtx)
 			cancel()
@@ -279,7 +293,7 @@ func (s *Service) Apply(ctx context.Context, input ApplyInput) (Runtime, error) 
 	s.runtime = Runtime{
 		State: supervisor.StateRunning, Mode: input.Mode, TargetType: target.TargetType,
 		SubscriptionID: target.SubscriptionID, NodeID: target.NodeID, NodeName: target.NodeName,
-		PoolID: target.PoolID, PoolName: target.PoolName, StartedAt: time.Now().UTC(),
+		PoolID: target.PoolID, PoolName: target.PoolName, AllowLan: input.AllowLan, StartedAt: time.Now().UTC(),
 	}
 	s.mu.Unlock()
 	s.publish("runtime.applied", map[string]string{"mode": string(input.Mode), "targetType": target.TargetType, "targetId": firstTargetID(target)})
@@ -291,7 +305,7 @@ func (s *Service) ReapplyRules(ctx context.Context) (Runtime, error) {
 	if runtime.State != supervisor.StateRunning {
 		return runtime, nil
 	}
-	input := ApplyInput{Mode: runtime.Mode}
+	input := ApplyInput{Mode: runtime.Mode, AllowLan: runtime.AllowLan}
 	if runtime.TargetType == "pool" {
 		input.PoolID = runtime.PoolID
 	} else {

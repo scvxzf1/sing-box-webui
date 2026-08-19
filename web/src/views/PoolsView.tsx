@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowRight, Gauge, Layers3, LoaderCircle, Plus, Save, Settings2, Trash2, X } from 'lucide-react'
-import { createNodePool, deleteNodePool, listNodePools, testNodeLatency, updateNodePool } from '../api/client'
+import { AlertTriangle, ArrowRight, Gauge, GripVertical, Layers3, LoaderCircle, Plus, Save, Search, Settings2, Trash2, X } from 'lucide-react'
+import { createNodePool, deleteNodePool, listNodePools, reorderNodePools, testNodeLatency, updateNodePool } from '../api/client'
 import type { LatencyResult, NodePool } from '../api/types'
 import { InlineError } from '../components/InlineError'
 import { PageHeading } from '../components/PageHeading'
@@ -50,6 +50,7 @@ export function PoolsView() {
   const [interruptExistingConnections, setInterruptExistingConnections] = useState(false)
   const [settingsDraft, setSettingsDraft] = useState<PoolSettingsDraft | null>(null)
   const [members, setMembers] = useState<PoolMember[]>([])
+  const [memberSearch, setMemberSearch] = useState('')
   const [latencyResults, setLatencyResults] = useState<Record<string, LatencyResult>>({})
   const [testingKeys, setTestingKeys] = useState<Set<string>>(new Set())
   const [testingAll, setTestingAll] = useState(false)
@@ -60,6 +61,8 @@ export function PoolsView() {
   const syncedFormKeyRef = useRef('')
 
   const poolsQuery = useQuery({ queryKey: ['pools'], queryFn: ({ signal }) => listNodePools(signal) })
+  const [draggingId, setDraggingId] = useState<string | null>(null)
+  const [dropIndicator, setDropIndicator] = useState<{ id: string; position: 'before' | 'after' } | null>(null)
   const selectedPool = poolsQuery.data?.find((pool) => pool.id === selectedPoolId)
 
   useEffect(() => {
@@ -85,6 +88,7 @@ export function PoolsView() {
     setMaxBackoff(selectedPool.maxBackoffSeconds)
     setInterruptExistingConnections(selectedPool.interruptExistingConnections)
     setMembers(selectedPool.members)
+    setMemberSearch('')
     setLatencyResults({})
     setTestingKeys(new Set())
     setLatencyError(null)
@@ -115,6 +119,7 @@ export function PoolsView() {
     setInterruptExistingConnections(false)
     setSettingsDraft(null)
     setMembers([])
+    setMemberSearch('')
     setLatencyResults({})
     setTestingKeys(new Set())
     setLatencyError(null)
@@ -150,6 +155,30 @@ export function PoolsView() {
     onSuccess: async () => {
       setSelectedPoolId('')
       await invalidate()
+    },
+  })
+  const reorderMutation = useMutation({
+    mutationFn: reorderNodePools,
+    onMutate: async (ids) => {
+      await queryClient.cancelQueries({ queryKey: ['pools'] })
+      const previous = queryClient.getQueryData<NodePool[]>(['pools'])
+      if (previous) {
+        const byID = new Map(previous.map((item) => [item.id, item]))
+        queryClient.setQueryData(
+          ['pools'],
+          ids.map((id) => byID.get(id)).filter((item): item is NodePool => Boolean(item)),
+        )
+      }
+      return { previous }
+    },
+    onSuccess: (items) => queryClient.setQueryData(['pools'], items),
+    onError: (_error, _ids, context) => {
+      if (context?.previous) queryClient.setQueryData(['pools'], context.previous)
+    },
+    onSettled: async () => {
+      setDraggingId(null)
+      setDropIndicator(null)
+      await queryClient.invalidateQueries({ queryKey: ['pools'] })
     },
   })
   useEffect(() => {
@@ -201,6 +230,16 @@ export function PoolsView() {
   }
 
   const availableMembers = members.filter((member) => member.available)
+  const visibleMembers = useMemo(() => {
+    const normalized = memberSearch.trim().toLowerCase()
+    if (!normalized) return members
+    return members.filter((member) =>
+      (member.nodeName ?? '').toLowerCase().includes(normalized) ||
+      (member.subscriptionName ?? '').toLowerCase().includes(normalized) ||
+      (member.type ?? '').toLowerCase().includes(normalized) ||
+      (member.server ?? '').toLowerCase().includes(normalized),
+    )
+  }, [members, memberSearch])
   const canSave = name.trim().length > 0 && !saveMutation.isPending
   const openSettings = () => setSettingsDraft({
     probeUrl, fallbackProbeUrls: fallbackProbeUrls.join('\n'), interval, tolerance, idleTimeout,
@@ -220,6 +259,30 @@ export function PoolsView() {
     setInterruptExistingConnections(settingsDraft.interruptExistingConnections)
     setSettingsDraft(null)
   }
+  const pools = poolsQuery.data ?? []
+  const handleDragStart = (event: DragEvent<HTMLButtonElement>, id: string) => {
+    if (reorderMutation.isPending) return
+    setDraggingId(id)
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', id)
+  }
+  const handleDragOver = (event: DragEvent<HTMLButtonElement>, id: string) => {
+    event.preventDefault()
+    if (!draggingId || draggingId === id || reorderMutation.isPending) return
+    const bounds = event.currentTarget.getBoundingClientRect()
+    setDropIndicator({ id, position: event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after' })
+    event.dataTransfer.dropEffect = 'move'
+  }
+  const handleDrop = (event: DragEvent<HTMLButtonElement>, targetID: string) => {
+    event.preventDefault()
+    const sourceID = draggingId ?? event.dataTransfer.getData('text/plain')
+    const indicator = dropIndicator
+    setDraggingId(null)
+    setDropIndicator(null)
+    if (!sourceID || sourceID === targetID || !indicator || indicator.id !== targetID || reorderMutation.isPending) return
+    const ids = movePoolID(pools.map((item) => item.id), sourceID, targetID, indicator.position)
+    if (ids) reorderMutation.mutate(ids)
+  }
 
   return (
     <>
@@ -228,18 +291,25 @@ export function PoolsView() {
         title="节点池"
         action={<button className="button" type="button" onClick={resetForCreate}><Plus size={16} />新建池</button>}
       />
-      {(poolsQuery.error || saveMutation.error || deleteMutation.error || latencyError) && (
-        <InlineError error={poolsQuery.error ?? saveMutation.error ?? deleteMutation.error ?? latencyError} />
+      {(poolsQuery.error || saveMutation.error || deleteMutation.error || reorderMutation.error || latencyError) && (
+        <InlineError error={poolsQuery.error ?? saveMutation.error ?? deleteMutation.error ?? reorderMutation.error ?? latencyError} />
       )}
       <section className="pools-layout">
         <aside className="pool-list panel" aria-label="节点池列表">
-          {(poolsQuery.data ?? []).map((pool) => (
+          {pools.map((pool) => (
             <button
-              className={`pool-row ${pool.id === selectedPoolId && !creating ? 'pool-row--selected' : ''}`}
+              className={`pool-row ${pool.id === selectedPoolId && !creating ? 'pool-row--selected' : ''} ${draggingId === pool.id ? 'pool-row--dragging' : ''} ${dropIndicator?.id === pool.id ? `pool-row--drop-${dropIndicator.position}` : ''}`}
               type="button"
               key={pool.id}
+              draggable={!reorderMutation.isPending}
+              aria-grabbed={draggingId === pool.id}
+              onDragStart={(event) => handleDragStart(event, pool.id)}
+              onDragOver={(event) => handleDragOver(event, pool.id)}
+              onDrop={(event) => handleDrop(event, pool.id)}
+              onDragEnd={() => { setDraggingId(null); setDropIndicator(null) }}
               onClick={() => { setCreating(false); setSelectedPoolId(pool.id) }}
             >
+              <GripVertical className="drag-handle" size={16} aria-hidden="true" />
               <span><strong>{pool.name}</strong><small>{pool.availableCount}/{pool.memberCount} 可用</small></span>
               <Layers3 size={16} aria-hidden="true" />
             </button>
@@ -260,7 +330,19 @@ export function PoolsView() {
                 </div>
               </div>
               <div className="pool-member-toolbar">
-                <div><strong>池内节点</strong><span>{availableMembers.length}/{members.length} 可用</span></div>
+                <div>
+                  <strong>池内节点</strong>
+                  <span>{availableMembers.length}/{members.length} 可用{memberSearch.trim() ? ` · 匹配 ${visibleMembers.length}` : ''}</span>
+                </div>
+                <label className="search-field pool-member-search">
+                  <Search size={16} aria-hidden="true" />
+                  <input
+                    aria-label="搜索池内节点"
+                    value={memberSearch}
+                    onChange={(event) => setMemberSearch(event.target.value)}
+                    placeholder="搜索节点"
+                  />
+                </label>
                 <label className="pool-grid-control">
                   <span>每行列数</span>
                   <select
@@ -278,7 +360,7 @@ export function PoolsView() {
                 </button>
               </div>
               <div className={`pool-members pool-members--${gridColumns}`} role="list">
-                {members.map((member) => {
+                {visibleMembers.map((member) => {
                   const key = memberKey(member.subscriptionId, member.nodeId)
                   const result = latencyResults[key]
                   const testing = testingKeys.has(key)
@@ -301,6 +383,12 @@ export function PoolsView() {
                   <div className="pool-members-empty">
                     <span>池内还没有节点</span>
                     <button className="button" type="button" onClick={() => { window.location.hash = '#nodes' }}>前往节点页<ArrowRight size={16} /></button>
+                  </div>
+                )}
+                {members.length > 0 && !visibleMembers.length && (
+                  <div className="pool-members-empty">
+                    <span>没有匹配“{memberSearch.trim()}”的节点</span>
+                    <button className="button" type="button" onClick={() => setMemberSearch('')}>清除搜索</button>
                   </div>
                 )}
               </div>
@@ -364,6 +452,16 @@ export function PoolsView() {
 
 function memberKey(subscriptionId: string, nodeId: string) {
   return `${subscriptionId}:${nodeId}`
+}
+
+function movePoolID(ids: string[], sourceID: string, targetID: string, position: 'before' | 'after') {
+  const sourceIndex = ids.indexOf(sourceID)
+  const targetIndex = ids.indexOf(targetID)
+  if (sourceIndex < 0 || targetIndex < 0 || sourceID === targetID) return null
+  const next = ids.filter((id) => id !== sourceID)
+  const nextTargetIndex = next.indexOf(targetID)
+  next.splice(nextTargetIndex + (position === 'after' ? 1 : 0), 0, sourceID)
+  return next
 }
 
 function readPoolGridColumns(): PoolGridColumns {

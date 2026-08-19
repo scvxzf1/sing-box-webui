@@ -32,6 +32,30 @@ func (s *Server) poolsCollection(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) poolsOrder(w http.ResponseWriter, r *http.Request) {
+	if s.pools == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "pools_unavailable", "Node pool storage is unavailable")
+		return
+	}
+	if r.Method != http.MethodPut {
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "The request method is not allowed")
+		return
+	}
+	var input struct {
+		IDs []string `json:"ids"`
+	}
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeError(w, r, http.StatusBadRequest, "request_invalid", err.Error())
+		return
+	}
+	items, err := s.pools.Reorder(input.IDs)
+	if err != nil {
+		writePoolError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 func (s *Server) poolItem(w http.ResponseWriter, r *http.Request) {
 	if s.pools == nil {
 		writeError(w, r, http.StatusServiceUnavailable, "pools_unavailable", "Node pool storage is unavailable")

@@ -23,6 +23,8 @@ import type {
   UpdateRulePool,
   TrafficPolicy,
   UpdateTrafficPolicy,
+  DnsProfile,
+  UpdateDnsProfile,
   ConnectivityTarget,
   CreateConnectivityTarget,
   UpdateConnectivityTarget,
@@ -126,6 +128,14 @@ export async function listSubscriptions(signal?: AbortSignal): Promise<Subscript
   return response.items
 }
 
+export async function reorderSubscriptions(ids: string[]): Promise<Subscription[]> {
+  const response = await request<{ items: Subscription[] }>('/api/v1/subscriptions/order', {
+    method: 'PUT',
+    body: JSON.stringify({ ids }),
+  })
+  return response.items
+}
+
 export function getSubscription(id: string, signal?: AbortSignal): Promise<Subscription> {
   return request(`/api/v1/subscriptions/${encodeURIComponent(id)}`, { signal })
 }
@@ -169,6 +179,14 @@ export function testNodeLatency(subscriptionId: string, input: LatencyRequest): 
 
 export async function listNodePools(signal?: AbortSignal): Promise<NodePool[]> {
   const response = await request<{ items: NodePool[] }>('/api/v1/pools', { signal })
+  return response.items
+}
+
+export async function reorderNodePools(ids: string[]): Promise<NodePool[]> {
+  const response = await request<{ items: NodePool[] }>('/api/v1/pools/order', {
+    method: 'PUT',
+    body: JSON.stringify({ ids }),
+  })
   return response.items
 }
 
@@ -274,6 +292,14 @@ export function getTrafficPolicy(signal?: AbortSignal): Promise<TrafficPolicy> {
 
 export function updateTrafficPolicy(input: UpdateTrafficPolicy): Promise<TrafficPolicy> {
   return request('/api/v1/traffic-policy', { method: 'PUT', body: JSON.stringify(input) })
+}
+
+export function getDnsProfile(signal?: AbortSignal): Promise<DnsProfile> {
+  return request('/api/v1/dns/profile', { signal })
+}
+
+export function updateDnsProfile(input: UpdateDnsProfile): Promise<DnsProfile> {
+  return request('/api/v1/dns/profile', { method: 'PUT', body: JSON.stringify(input) })
 }
 
 export function getCore(signal?: AbortSignal): Promise<CoreInfo> {

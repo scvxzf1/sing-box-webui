@@ -23,6 +23,9 @@ type FetchMetadata struct {
 	ETag         string
 	LastModified string
 	NotModified  bool
+	// Path reports how the subscription content was retrieved: "direct" or
+	// "proxy". Empty for a 304 Not-Modified response (no body fetched).
+	Path string
 }
 
 type FetchClient interface {
@@ -61,8 +64,7 @@ func NewFetcher() *HTTPFetcher {
 		return nil, fmt.Errorf("subscription host resolved only to blocked addresses")
 	}
 
-	fetcher := &HTTPFetcher{}
-	fetcher.client = &http.Client{
+	return &HTTPFetcher{client: &http.Client{
 		Transport: transport,
 		Timeout:   20 * time.Second,
 		CheckRedirect: func(request *http.Request, via []*http.Request) error {
@@ -71,11 +73,53 @@ func NewFetcher() *HTTPFetcher {
 			}
 			return validateSubscriptionURL(request.URL)
 		},
+	}}
+}
+
+// NewProxyFetcher builds a fetcher whose requests are routed through the local
+// proxy mixed inbound at proxyAddress (host:port). The subscription host is
+// resolved and connected by the proxy itself, so unlike the direct fetcher no
+// local DNS/public-address checks are applied to the dial.
+func NewProxyFetcher(proxyAddress string) (*HTTPFetcher, error) {
+	proxyURL, err := url.Parse("http://" + proxyAddress)
+	if err != nil {
+		return nil, fmt.Errorf("parse proxy address: %w", err)
 	}
-	return fetcher
+	transport := &http.Transport{
+		Proxy:                 http.ProxyURL(proxyURL),
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          16,
+		IdleConnTimeout:       30 * time.Second,
+		TLSHandshakeTimeout:   8 * time.Second,
+		ResponseHeaderTimeout: 12 * time.Second,
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+	}
+	return &HTTPFetcher{client: &http.Client{
+		Transport: transport,
+		Timeout:   20 * time.Second,
+		CheckRedirect: func(request *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("too many redirects")
+			}
+			return validateSubscriptionURL(request.URL)
+		},
+	}}, nil
 }
 
 func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL, etag, lastModified string) ([]byte, FetchMetadata, error) {
+	return f.fetch(ctx, rawURL, etag, lastModified, "")
+}
+
+// FetchVia behaves like Fetch but reports the given path label in metadata,
+// used when the request was routed through a proxy fallback.
+func (f *HTTPFetcher) FetchVia(ctx context.Context, rawURL, etag, lastModified, path string) ([]byte, FetchMetadata, error) {
+	return f.fetch(ctx, rawURL, etag, lastModified, path)
+}
+
+func (f *HTTPFetcher) fetch(ctx context.Context, rawURL, etag, lastModified, path string) ([]byte, FetchMetadata, error) {
+	if path == "" {
+		path = "direct"
+	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, FetchMetadata{}, fmt.Errorf("parse subscription URL: %w", err)
@@ -126,6 +170,7 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL, etag, lastModified stri
 	if len(content) > maxSubscriptionBytes {
 		return nil, FetchMetadata{}, fmt.Errorf("subscription exceeds %d bytes", maxSubscriptionBytes)
 	}
+	metadata.Path = path
 	return content, metadata, nil
 }
 

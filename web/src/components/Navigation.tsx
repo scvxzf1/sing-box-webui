@@ -1,6 +1,6 @@
-import { Activity, Cable, Cpu, Gauge, Layers3, ListTree, RadioTower, Route, ShieldCheck, Waypoints } from 'lucide-react'
+import { Activity, Cable, Cpu, Gauge, Globe, Layers3, ListTree, RadioTower, Route, ShieldCheck, Waypoints } from 'lucide-react'
 
-export type ViewName = 'overview' | 'subscriptions' | 'nodes' | 'pools' | 'rules' | 'traffic' | 'connection' | 'links' | 'core'
+export type ViewName = 'overview' | 'subscriptions' | 'nodes' | 'pools' | 'rules' | 'traffic' | 'connection' | 'links' | 'dns' | 'core'
 
 interface NavigationProps {
   active: ViewName
@@ -15,6 +15,7 @@ const items = [
   { id: 'pools' as const, label: '节点池', icon: Layers3 },
   { id: 'rules' as const, label: '规则', icon: Route },
   { id: 'traffic' as const, label: '流量策略', icon: Gauge },
+  { id: 'dns' as const, label: 'DNS', icon: Globe },
   { id: 'core' as const, label: '核心', icon: Cpu },
   { id: 'overview' as const, label: '概览', icon: Activity },
 ]

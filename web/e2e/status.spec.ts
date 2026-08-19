@@ -3,7 +3,7 @@ import { expect, test } from '@playwright/test'
 test('shows the local control-plane status', async ({ page }) => {
   await page.goto('/')
 
-  await expect(page).toHaveTitle('sing-box WebUI')
+  await expect(page).toHaveTitle('sing-box WebUI · 本机代理控制面')
   await expect(page.getByRole('heading', { name: '运行概览' })).toBeVisible()
   await expect(page.getByText('Web API')).toBeVisible()
   await expect(page.getByText('127.0.0.1:11872').first()).toBeVisible()
@@ -23,10 +23,10 @@ test('switches and persists the dark theme without narrow-screen overflow', asyn
   await page.setViewportSize({ width: 360, height: 800 })
   const layout = await page.evaluate(() => {
     const header = document.querySelector('.topbar')?.getBoundingClientRect()
-    const toggle = document.querySelector('.theme-toggle')?.getBoundingClientRect()
+    const actions = document.querySelector('.topbar-actions')?.getBoundingClientRect()
     return {
       overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      alignedRight: Boolean(header && toggle && header.right - toggle.right <= 16),
+      alignedRight: Boolean(header && actions && header.right - actions.right <= 16),
     }
   })
   expect(layout.overflow).toBe(0)
@@ -66,6 +66,25 @@ test('navigates subscription, node and connection workflows', async ({ page }) =
   await expect(page.getByRole('heading', { name: '连接与应用' })).toBeVisible()
   await expect(page.getByRole('button', { name: '开启' })).toBeDisabled()
   await expect(page.getByText('sing-box 核心不可用')).toBeVisible()
+})
+
+test('renders a reported URL beside the resolved host', async ({ page }) => {
+  await page.route('**/api/v1/links*', async (route) => route.fulfill({ json: {
+    running: true,
+    updatedAt: '2026-08-05T00:00:00Z',
+    stats: { active: 1, total: 1, uploadTotal: 0, downloadTotal: 0, uploadRate: 0, downloadRate: 0, trackedCapacity: 1000 },
+    links: [{
+      id: 'link-1', host: '203.0.113.10:443', url: 'example.com', network: 'tcp', type: 'mixed',
+      upload: 0, download: 0, uploadRate: 0, downloadRate: 0, node: 'Tokyo', active: true,
+      firstSeenAt: '2026-08-05T00:00:00Z', lastSeenAt: '2026-08-05T00:00:00Z',
+    }],
+  } }))
+  await page.goto('/#links')
+
+  await expect(page.getByRole('heading', { name: '链接状态' })).toBeVisible()
+  await expect(page.getByRole('columnheader', { name: '网址 / 域名' })).toBeVisible()
+  await expect(page.getByText('203.0.113.10:443')).toBeVisible()
+  await expect(page.getByText('example.com', { exact: true })).toBeVisible()
 })
 
 test('manages local and imported routing rules without narrow-screen overlap', async ({ page }) => {
@@ -231,6 +250,7 @@ test('builds a cross-subscription pool and selects it as connection target', asy
   await page.locator('.connection-main').getByRole('button', { name: '节点池' }).click()
   await expect(page.getByLabel('选择节点池')).toHaveValue('pool-1')
   await expect(page.getByText('2/2 个成员可用 · 每 60 秒探测')).toBeVisible()
+  await page.getByRole('button', { name: '系统代理' }).click()
   await expect(page.getByRole('button', { name: '开启' })).toBeEnabled()
 
   for (const viewport of [{ width: 1366, height: 768 }, { width: 390, height: 844 }]) {

@@ -15,10 +15,13 @@ import (
 )
 
 const (
-	dohEndpoint        = "https://1.1.1.1/dns-query"
 	maxDNSResponseSize = 64 << 10
 	resolveTimeout     = 3 * time.Second
 )
+
+// DefaultDohEndpoint is the DNS over HTTPS endpoint used by PublicAddresses.
+// Override via SING_BOX_WEBUI_DOH_ENDPOINT environment variable.
+var DefaultDohEndpoint = "https://1.12.12.12/dns-query"
 
 var dohHTTPClient = &http.Client{
 	Transport: &http.Transport{
@@ -34,7 +37,7 @@ func PublicAddresses(ctx context.Context, host string) ([]netip.Addr, error) {
 	if address, err := netip.ParseAddr(host); err == nil {
 		return []netip.Addr{address.Unmap()}, nil
 	}
-	return ResolveDoH(ctx, dohHTTPClient, dohEndpoint, host)
+	return ResolveDoH(ctx, dohHTTPClient, DefaultDohEndpoint, host)
 }
 
 func ResolveDoH(ctx context.Context, client *http.Client, endpoint, host string) ([]netip.Addr, error) {

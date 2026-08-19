@@ -1,0 +1,10 @@
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: singbox-webui-nginx
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./web/dist:/usr/share/nginx/html:ro
+    # host 网络：直接监听 0.0.0.0:9909，并能访问 127.0.0.1:33334 后端

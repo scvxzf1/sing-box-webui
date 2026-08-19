@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	MaxTargets          = 128
+	MaxTargets          = 200
 	MaxConcurrentTests  = 4
 	resolveConcurrency  = 8
 	requestConcurrency  = 16

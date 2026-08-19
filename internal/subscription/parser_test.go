@@ -42,6 +42,26 @@ func TestParserSkipsUnsupportedLines(t *testing.T) {
 	}
 }
 
+func TestParserSanitizesTUICUUIDWithUserSegment(t *testing.T) {
+	t.Parallel()
+	uuid := "46695964-31d9-47b6-94fa-bdbdc9e6db19"
+	outbound := map[string]any{
+		"type":        "tuic",
+		"tag":         "TUIC",
+		"server":      "tuic.example.com",
+		"server_port": float64(21362),
+		// Some subscriptions embed "uuid:userId" into the uuid slot.
+		"uuid": uuid + ":" + uuid,
+	}
+	node, err := nodeFromOutbound(outbound)
+	if err != nil {
+		t.Fatalf("nodeFromOutbound() error = %v", err)
+	}
+	if node.UUID != uuid {
+		t.Fatalf("UUID = %q, want sanitized %q", node.UUID, uuid)
+	}
+}
+
 func TestParserPreservesVLESSReality(t *testing.T) {
 	t.Parallel()
 	raw := "vless://11111111-1111-1111-1111-111111111111@proxy.example.com:443?security=reality&sni=example.com&fp=chrome&pbk=public-key&sid=0123456789abcdef&type=tcp&flow=xtls-rprx-vision#Reality"

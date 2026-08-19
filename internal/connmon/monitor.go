@@ -33,6 +33,7 @@ type Resolver func(chains []string) string
 type Link struct {
 	ID            string    `json:"id"`
 	Host          string    `json:"host"`
+	URL           string    `json:"url,omitempty"`
 	Network       string    `json:"network"`
 	Type          string    `json:"type"`
 	Upload        int64     `json:"upload"`
@@ -72,6 +73,7 @@ type SortKey string
 
 const (
 	SortHost         SortKey = "host"
+	SortURL          SortKey = "url"
 	SortNode         SortKey = "node"
 	SortUpload       SortKey = "upload"
 	SortDownload     SortKey = "download"
@@ -288,7 +290,8 @@ func (m *Monitor) poll(ctx context.Context) {
 	seen := make(map[string]struct{}, len(payload.Connections))
 	for _, c := range payload.Connections {
 		seen[c.ID] = struct{}{}
-		host := c.Metadata.Host
+		urlHost := strings.TrimSpace(c.Metadata.Host)
+		host := urlHost
 		if host == "" {
 			host = c.Metadata.DestinationIP
 		}
@@ -324,6 +327,7 @@ func (m *Monitor) poll(ctx context.Context) {
 		m.lastSeen[c.ID] = sample{upload: c.Upload, download: c.Download, at: now}
 
 		link.Host = host
+		link.URL = urlHost
 		link.Network = c.Metadata.Network
 		link.Type = c.Metadata.Type
 		link.Upload = c.Upload
@@ -493,7 +497,7 @@ func filterLinks(links []Link, q Query) []Link {
 			continue
 		}
 		if search != "" {
-			haystack := strings.ToLower(link.Host + " " + link.Node + " " + link.Network + " " + link.Type + " " + strings.Join(link.Chain, " "))
+			haystack := strings.ToLower(link.Host + " " + link.URL + " " + link.Node + " " + link.Network + " " + link.Type + " " + strings.Join(link.Chain, " "))
 			if !strings.Contains(haystack, search) {
 				continue
 			}
@@ -531,6 +535,8 @@ func compareLinks(a, b Link, key SortKey) int {
 	switch key {
 	case SortHost:
 		return strings.Compare(strings.ToLower(a.Host), strings.ToLower(b.Host))
+	case SortURL:
+		return strings.Compare(strings.ToLower(a.URL), strings.ToLower(b.URL))
 	case SortNode:
 		return strings.Compare(strings.ToLower(a.Node), strings.ToLower(b.Node))
 	case SortUpload:

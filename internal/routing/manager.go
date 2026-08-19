@@ -98,6 +98,7 @@ func (m *Manager) Update(id string, input UpdateInput) (Rule, error) {
 		return Rule{}, ErrNotFound
 	}
 	current := m.rules[index]
+	previous := current
 	if current.Origin == OriginSubscription {
 		if input.Name != nil || input.Conditions != nil || input.Action != nil {
 			return Rule{}, fmt.Errorf("subscription rules only support enable or disable")
@@ -133,6 +134,7 @@ func (m *Manager) Update(id string, input UpdateInput) (Rule, error) {
 	}
 	m.rules[index] = current
 	if err := m.persistLocked(); err != nil {
+		m.rules[index] = previous
 		return Rule{}, err
 	}
 	m.publish("rule.updated", map[string]string{"ruleId": id})
@@ -149,9 +151,11 @@ func (m *Manager) Delete(id string) error {
 	if m.rules[index].Origin != OriginManual {
 		return fmt.Errorf("only manual rules can be deleted")
 	}
+	previous := cloneRules(m.rules)
 	m.rules = append(m.rules[:index], m.rules[index+1:]...)
 	m.normalizeManualPositionsLocked()
 	if err := m.persistLocked(); err != nil {
+		m.rules = previous
 		return err
 	}
 	m.publish("rule.deleted", map[string]string{"ruleId": id})
@@ -170,6 +174,7 @@ func (m *Manager) Reorder(ids []string) ([]Rule, error) {
 	if len(ids) != len(manual) {
 		return nil, fmt.Errorf("order must include every manual rule exactly once")
 	}
+	previous := cloneRules(m.rules)
 	seen := make(map[string]struct{}, len(ids))
 	for position, id := range ids {
 		index, exists := manual[id]
@@ -183,6 +188,7 @@ func (m *Manager) Reorder(ids []string) ([]Rule, error) {
 		m.rules[index].Position = position
 	}
 	if err := m.persistLocked(); err != nil {
+		m.rules = previous
 		return nil, err
 	}
 	m.publish("rules.reordered", map[string]int{"count": len(ids)})

@@ -30,6 +30,33 @@ const subscription: Subscription = {
     { id: 'node-2', name: 'London', type: 'shadowsocks', server: 'london.example.com', port: 8388, tls: false, selected: false },
   ],
 }
+const reorderedSubscription: Subscription = {
+  ...subscription,
+  id: 'subscription-2',
+  name: 'Backup',
+  active: false,
+  nodeCount: 0,
+  nodes: [],
+}
+
+const pagedNodes = Array.from({ length: 120 }, (_, index) => ({
+  id: `node-${index + 1}`,
+  name: `Node ${String(index + 1).padStart(3, '0')}`,
+  type: 'trojan',
+  server: `node-${index + 1}.example.com`,
+  port: 443,
+  tls: true,
+  selected: false,
+}))
+const pagedSubscription: Subscription = {
+  ...subscription,
+  nodeCount: pagedNodes.length,
+  nodes: pagedNodes,
+}
+
+const manyResults = (ids: string[]) => ({
+  items: ids.map((id) => ({ nodeId: id, name: id, status: 'ok' as const, latencyMs: 40 })),
+})
 
 describe('NodesView', () => {
 	afterEach(cleanup)
@@ -74,11 +101,22 @@ describe('NodesView', () => {
     expect(api.testNodeLatency).toHaveBeenCalledWith('subscription-1', { nodeIds: ['node-1'] })
 
     await user.click(screen.getByRole('button', { name: '将 Tokyo 加入节点池' }))
+    expect(screen.getByRole('dialog').parentElement?.parentElement).toBe(document.body)
     await user.click(screen.getByRole('button', { name: /Daily/ }))
     await waitFor(() => expect(api.updateNodePool).toHaveBeenCalledWith('pool-1', {
       members: [{ subscriptionId: 'subscription-1', nodeId: 'node-1' }],
     }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('keeps the subscription selector in the persisted subscription order', async () => {
+    api.listSubscriptions.mockResolvedValue([reorderedSubscription, subscription])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><NodesView /></QueryClientProvider>)
+
+    await screen.findByText('Tokyo')
+    const selector = screen.getByLabelText('订阅') as HTMLSelectElement
+    expect(Array.from(selector.options).map((option) => option.textContent)).toEqual(['Backup', 'Main'])
   })
 
   it('starts manual tests for different nodes concurrently', async () => {
@@ -131,5 +169,59 @@ describe('NodesView', () => {
       ],
     })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('paginates nodes and restores the persisted page size', async () => {
+    api.getSubscription.mockResolvedValue(pagedSubscription)
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><NodesView /></QueryClientProvider>)
+
+    expect(await screen.findByText('Node 001')).toBeInTheDocument()
+    expect(screen.getByText('Node 048')).toBeInTheDocument()
+    expect(screen.queryByText('Node 049')).not.toBeInTheDocument()
+    expect(screen.getByText('第 1 / 3 页')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '下一页' }))
+    expect(await screen.findByText('Node 049')).toBeInTheDocument()
+    expect(screen.queryByText('Node 048')).not.toBeInTheDocument()
+    expect(screen.getByText('第 2 / 3 页')).toBeInTheDocument()
+
+    await user.selectOptions(screen.getByLabelText('每页节点数'), '96')
+    await waitFor(() => expect(window.localStorage.getItem('sing-box-webui:nodes-page-size')).toBe('96'))
+    expect(await screen.findByText('Node 096')).toBeInTheDocument()
+    expect(screen.getByText('第 1 / 2 页')).toBeInTheDocument()
+
+    cleanup()
+    const restored = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={restored}><NodesView /></QueryClientProvider>)
+    expect(await screen.findByText('Node 001')).toBeInTheDocument()
+    expect(screen.getByLabelText('每页节点数')).toHaveValue('96')
+  })
+
+  it('selects the current page and tests only the selected nodes', async () => {
+    api.getSubscription.mockResolvedValue(pagedSubscription)
+    api.testNodeLatency.mockImplementation((_id: string, input: { nodeIds?: string[] }) =>
+      Promise.resolve(manyResults(input.nodeIds ?? [])))
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><NodesView /></QueryClientProvider>)
+
+    expect(await screen.findByText('Node 001')).toBeInTheDocument()
+    const selectAll = screen.getByRole('checkbox', { name: '全选当前页' })
+    await user.click(selectAll)
+    expect(await screen.findByText(/已选 48/)).toBeInTheDocument()
+    expect(selectAll).toBeChecked()
+
+    await user.click(screen.getByRole('button', { name: '下一页' }))
+    await user.click(screen.getByRole('checkbox', { name: '全选当前页' }))
+    expect(await screen.findByText(/已选 96/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '测试所选 (96)' }))
+    await waitFor(() => expect(api.testNodeLatency).toHaveBeenCalledTimes(1))
+    expect(api.testNodeLatency).toHaveBeenCalledWith('subscription-1', {
+      nodeIds: pagedNodes.slice(0, 96).map((node) => node.id),
+    })
+    expect((await screen.findAllByText('40 ms')).length).toBeGreaterThan(0)
   })
 })

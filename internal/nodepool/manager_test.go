@@ -102,3 +102,41 @@ func TestResolveRejectsPoolWithFewerThanTwoAvailableMembers(t *testing.T) {
 		t.Fatal("Resolve() error = nil, want unavailable member error")
 	}
 }
+
+func TestReorderPersistsNodePoolOrder(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	subscriptions, err := subscription.OpenManager(filepath.Join(root, "subscriptions"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(root, "pools")
+	manager, err := OpenManager(directory, subscriptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := manager.Create(CreateInput{Name: "Alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.Create(CreateInput{Name: "Beta"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Reorder([]string{second.ID, first.ID}); err != nil {
+		t.Fatalf("Reorder() error = %v", err)
+	}
+	if listed := manager.List(); len(listed) != 2 || listed[0].ID != second.ID || listed[1].ID != first.ID {
+		t.Fatalf("reordered pools = %+v", listed)
+	}
+	reopened, err := OpenManager(directory, subscriptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listed := reopened.List(); len(listed) != 2 || listed[0].ID != second.ID || listed[1].ID != first.ID {
+		t.Fatalf("persisted pool order = %+v", listed)
+	}
+	if _, err := manager.Reorder([]string{first.ID, first.ID}); err == nil {
+		t.Fatal("Reorder() accepted duplicate pool IDs")
+	}
+}

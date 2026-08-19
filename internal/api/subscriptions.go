@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -43,6 +44,30 @@ func (s *Server) subscriptionsCollection(w http.ResponseWriter, r *http.Request)
 	default:
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "The request method is not allowed")
 	}
+}
+
+func (s *Server) subscriptionsOrder(w http.ResponseWriter, r *http.Request) {
+	if s.subscriptions == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "subscriptions_unavailable", "Subscription storage is unavailable")
+		return
+	}
+	if r.Method != http.MethodPut {
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "The request method is not allowed")
+		return
+	}
+	var input struct {
+		IDs []string `json:"ids"`
+	}
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeError(w, r, http.StatusBadRequest, "request_invalid", err.Error())
+		return
+	}
+	items, err := s.subscriptions.Reorder(input.IDs)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (s *Server) subscriptionItem(w http.ResponseWriter, r *http.Request) {
@@ -159,7 +184,7 @@ func (s *Server) testNodeLatency(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(input.NodeIDs) > latency.MaxTargets {
-		writeError(w, r, http.StatusBadRequest, "request_invalid", "单次最多测试 128 个节点")
+		writeError(w, r, http.StatusBadRequest, "request_invalid", fmt.Sprintf("单次最多测试 %d 个节点", latency.MaxTargets))
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)

@@ -18,29 +18,44 @@ import { NodeDiagnostic } from './NodeDiagnostic'
 type Mode = ApplyRuntime['mode']
 type TargetType = 'node' | 'pool'
 
+const targetTypeStorageKey = 'sing-box-webui:connection-target-type'
+const subscriptionIdStorageKey = 'sing-box-webui:connection-subscription-id'
+const poolIdStorageKey = 'sing-box-webui:connection-pool-id'
+
 export function ConnectionView() {
   const queryClient = useQueryClient()
-  const [subscriptionId, setSubscriptionId] = useState('')
-  const [poolId, setPoolId] = useState('')
-  const [targetType, setTargetType] = useState<TargetType>('node')
+  const [subscriptionId, setSubscriptionId] = useState(readStoredSubscriptionId)
+  const [poolId, setPoolId] = useState(readStoredPoolId)
+  const [targetType, setTargetType] = useState<TargetType>(readStoredTargetType)
   const [mode, setMode] = useState<Mode>('tun')
+  const [allowLan, setAllowLan] = useState(false)
   const subscriptionsQuery = useQuery({
     queryKey: ['subscriptions'],
     queryFn: ({ signal }) => listSubscriptions(signal),
   })
   const poolsQuery = useQuery({ queryKey: ['pools'], queryFn: ({ signal }) => listNodePools(signal) })
   useEffect(() => {
-    if (!subscriptionId && subscriptionsQuery.data?.length) {
-      setSubscriptionId(subscriptionsQuery.data.find((item) => item.active)?.id ?? subscriptionsQuery.data[0].id)
-    }
+    if (!subscriptionsQuery.data || subscriptionsQuery.data.some((item) => item.id === subscriptionId)) return
+    setSubscriptionId(subscriptionsQuery.data.find((item) => item.active)?.id ?? subscriptionsQuery.data[0]?.id ?? '')
   }, [subscriptionId, subscriptionsQuery.data])
   useEffect(() => {
-    if (!poolId && poolsQuery.data?.length) setPoolId(poolsQuery.data[0].id)
+    if (!poolsQuery.data || poolsQuery.data.some((pool) => pool.id === poolId)) return
+    setPoolId(poolsQuery.data[0]?.id ?? '')
   }, [poolId, poolsQuery.data])
+  useEffect(() => {
+    window.localStorage.setItem(targetTypeStorageKey, targetType)
+  }, [targetType])
+  useEffect(() => {
+    window.localStorage.setItem(subscriptionIdStorageKey, subscriptionId)
+  }, [subscriptionId])
+  useEffect(() => {
+    window.localStorage.setItem(poolIdStorageKey, poolId)
+  }, [poolId])
+  const hasSelectedSubscription = Boolean(subscriptionsQuery.data?.some((item) => item.id === subscriptionId))
   const detailQuery = useQuery({
     queryKey: ['subscription', subscriptionId],
     queryFn: ({ signal }) => getSubscription(subscriptionId, signal),
-    enabled: targetType === 'node' && subscriptionId !== '',
+    enabled: targetType === 'node' && hasSelectedSubscription,
   })
   const runtimeQuery = useQuery({
     queryKey: ['runtime'],
@@ -70,6 +85,10 @@ export function ConnectionView() {
   useEffect(() => {
     if (runtime?.state === 'running' && runtime.mode) setMode(runtime.mode)
   }, [runtime?.mode, runtime?.state])
+
+  useEffect(() => {
+    if (runtime?.state === 'running') setAllowLan(Boolean(runtime.allowLan))
+  }, [runtime?.allowLan, runtime?.state])
 
   return (
     <>
@@ -121,8 +140,8 @@ export function ConnectionView() {
                 disabled={!canApply || isBusy}
                 onClick={() =>
                   targetType === 'pool'
-                    ? selectedPool && applyMutation.mutate({ poolId: selectedPool.id, mode })
-                    : selectedNode && applyMutation.mutate({ subscriptionId, nodeId: selectedNode.id, mode })
+                    ? selectedPool && applyMutation.mutate({ poolId: selectedPool.id, mode, allowLan })
+                    : selectedNode && applyMutation.mutate({ subscriptionId, nodeId: selectedNode.id, mode, allowLan })
                 }
               >
                 <Play size={16} aria-hidden="true" />
@@ -133,7 +152,7 @@ export function ConnectionView() {
         </aside>
 
         <div className="connection-main">
-          <div className="connection-step connection-step--target">
+          <div className="connection-step connection-step--panel">
             <span className="step-index">1</span>
             <div>
               <h2>连接目标</h2>
@@ -153,7 +172,7 @@ export function ConnectionView() {
             </div>
           </div>
 
-          <div className="connection-step">
+          <div className="connection-step connection-step--panel">
             <span className="step-index">2</span>
             <div>
               <h2>{targetType === 'node' ? '使用节点' : '池状态'}</h2>
@@ -180,7 +199,7 @@ export function ConnectionView() {
             </div>
           </div>
 
-          <div className="connection-step">
+          <div className="connection-step connection-step--panel">
             <span className="step-index">3</span>
             <div>
               <h2>代理模式</h2>
@@ -215,9 +234,29 @@ export function ConnectionView() {
             </div>
           </div>
 
-          <QuickTest />
-          <NodeDiagnostic kind="quality" step={5} />
-          <NodeDiagnostic kind="exit" step={6} />
+          <div className="connection-step connection-step--panel">
+            <span className="step-index">4</span>
+            <div>
+              <h2>局域网连接</h2>
+              <label className="lan-toggle">
+                <input type="checkbox" checked={allowLan} disabled={isRunning} onChange={(event) => setAllowLan(event.target.checked)} />
+                <span aria-hidden="true" />
+                <em>{allowLan ? '已开放' : '仅本机'}</em>
+              </label>
+              <div className="capability-note capability-note--ok">
+                {allowLan
+                  ? '局域网内其他设备可将代理指向本机 IP 出网（监听 0.0.0.0）'
+                  : '仅本机使用代理，不对外暴露监听端口'}
+                {isRunning && <span className="capability-hint">停止代理后可切换</span>}
+              </div>
+            </div>
+          </div>
+
+          <div className="connection-diagnostics-row">
+            <NodeDiagnostic kind="quality" step={5} />
+            <NodeDiagnostic kind="exit" step={6} />
+          </div>
+          <QuickTest step={7} />
         </div>
       </section>
     </>
@@ -229,4 +268,16 @@ function formatHealthState(state: 'unknown' | 'healthy' | 'degraded' | 'outage')
   if (state === 'degraded') return '部分节点降级'
   if (state === 'outage') return '节点池故障'
   return '健康检查中'
+}
+
+function readStoredTargetType(): TargetType {
+  return window.localStorage.getItem(targetTypeStorageKey) === 'pool' ? 'pool' : 'node'
+}
+
+function readStoredSubscriptionId() {
+  return window.localStorage.getItem(subscriptionIdStorageKey) ?? ''
+}
+
+function readStoredPoolId() {
+  return window.localStorage.getItem(poolIdStorageKey) ?? ''
 }

@@ -26,6 +26,7 @@ import (
 const (
 	maxReleaseResponse = 4 << 20
 	maxArchiveSize     = 128 << 20
+	maxExtractedSize   = 256 << 20
 	defaultReleaseAPI  = "https://api.github.com/repos/SagerNet/sing-box/releases"
 )
 
@@ -285,6 +286,7 @@ func extractReleaseArchive(archivePath, destination, version string) error {
 	prefix := archiveRoot(version) + "/"
 	wanted := map[string]os.FileMode{"sing-box": 0o700, "LICENSE": 0o600}
 	found := make(map[string]bool, len(wanted))
+	var extractedBytes int64
 	tape := tar.NewReader(gzipReader)
 	for {
 		header, err := tape.Next()
@@ -294,6 +296,10 @@ func extractReleaseArchive(archivePath, destination, version string) error {
 		if err != nil {
 			return fmt.Errorf("read core archive: %w", err)
 		}
+		if header.Size < 0 || header.Size > maxExtractedSize-extractedBytes {
+			return errors.New("core archive uncompressed content exceeds the size limit")
+		}
+		extractedBytes += header.Size
 		if header.Typeflag != tar.TypeReg || !strings.HasPrefix(header.Name, prefix) {
 			continue
 		}
@@ -307,10 +313,13 @@ func extractReleaseArchive(archivePath, destination, version string) error {
 		if err != nil {
 			return fmt.Errorf("create core asset %s: %w", name, err)
 		}
-		_, copyErr := io.Copy(output, io.LimitReader(tape, maxArchiveSize))
+		written, copyErr := io.Copy(output, tape)
 		closeErr := output.Close()
 		if copyErr != nil || closeErr != nil {
 			return fmt.Errorf("extract core asset %s: %w", name, errors.Join(copyErr, closeErr))
+		}
+		if written != header.Size {
+			return fmt.Errorf("extract core asset %s: unexpected size", name)
 		}
 		found[name] = true
 	}
@@ -388,7 +397,22 @@ func (m *Manager) writeState(value state) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, filepath.Join(m.root, "state.json"))
+	if err := os.Rename(name, filepath.Join(m.root, "state.json")); err != nil {
+		return err
+	}
+	return syncDirectory(m.root)
+}
+
+func syncDirectory(directory string) error {
+	handle, err := os.Open(directory)
+	if err != nil {
+		return fmt.Errorf("open core directory: %w", err)
+	}
+	defer handle.Close()
+	if err := handle.Sync(); err != nil {
+		return fmt.Errorf("sync core directory: %w", err)
+	}
+	return nil
 }
 
 func replaceSymlink(linkPath, target string) error {

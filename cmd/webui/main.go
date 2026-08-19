@@ -17,8 +17,10 @@ import (
 	"sing-box-webui/internal/connectivity"
 	"sing-box-webui/internal/control"
 	"sing-box-webui/internal/core"
+	"sing-box-webui/internal/dnsprofile"
 	"sing-box-webui/internal/events"
 	"sing-box-webui/internal/latency"
+	"sing-box-webui/internal/netresolve"
 	"sing-box-webui/internal/nodepool"
 	"sing-box-webui/internal/platform/privilege"
 	"sing-box-webui/internal/platform/systemproxy"
@@ -45,6 +47,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	netresolve.DefaultDohEndpoint = config.DohEndpoint
+
 	broker := events.NewBroker(128, 16)
 	subscriptions, err := subscription.OpenManager(filepath.Join(config.DataDir, "subscriptions"), broker)
 	if err != nil {
@@ -54,6 +58,11 @@ func main() {
 	rules, err := routing.OpenManager(filepath.Join(config.DataDir, "routing"), broker)
 	if err != nil {
 		logger.Error("open routing rule store", "error", err)
+		os.Exit(1)
+	}
+	dnsProfiles, err := dnsprofile.OpenManager(filepath.Join(config.DataDir, "dns"), broker)
+	if err != nil {
+		logger.Error("open DNS profile store", "error", err)
 		os.Exit(1)
 	}
 	subscriptions.SetRuleSink(rules)
@@ -86,6 +95,7 @@ func main() {
 		Subscriptions: subscriptions,
 		Pools:         pools,
 		Rules:         rules,
+		DNS:           dnsProfiles,
 		Client:        singBoxClient,
 		ConfigStore:   configStore,
 		Supervisor:    processSupervisor,
@@ -94,7 +104,16 @@ func main() {
 		TUNEnabled:    config.EnableTUN,
 		MixedPort:     config.MixedPort,
 	})
+	// Subscriptions fetch direct-first, then fall back to the running proxy
+	// (system-proxy mode); empty in TUN mode where the direct path is tunneled.
+	subscriptions.SetProxyResolver(controlService.ProxyAddress)
 	rules.SetReload(func() error {
+		reloadCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_, err := controlService.ReapplyRules(reloadCtx)
+		return err
+	})
+	dnsProfiles.SetReload(func() error {
 		reloadCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		_, err := controlService.ReapplyRules(reloadCtx)
@@ -120,6 +139,7 @@ func main() {
 		Subscriptions: subscriptions,
 		Pools:         pools,
 		Rules:         rules,
+		DNS:           dnsProfiles,
 		Latency:       latency.NewService(subscriptions, singBoxClient, filepath.Join(config.DataDir, "latency")),
 		Control:       controlService,
 		Core:          coreManager,

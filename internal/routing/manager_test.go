@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"path/filepath"
 	"testing"
 
 	"sing-box-webui/internal/subscription"
@@ -27,6 +28,43 @@ func TestManagerPersistsAndCompilesManualRules(t *testing.T) {
 	}
 	if got := manager.List(); len(got) != 2 || got[0].ID != rule.ID || got[1].ID != BuiltinGlobalID {
 		t.Fatalf("list = %#v", got)
+	}
+}
+
+func TestRuleMutationsRollBackWhenPersistenceFails(t *testing.T) {
+	directory := t.TempDir()
+	manager, err := OpenManager(directory, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := manager.Create(CreateInput{
+		Name: "first", Enabled: true, Action: ActionDirect,
+		Conditions: []Condition{{Type: "domain", Values: []string{"first.example"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.Create(CreateInput{
+		Name: "second", Enabled: true, Action: ActionProxy,
+		Conditions: []Condition{{Type: "domain", Values: []string{"second.example"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.path = filepath.Join(directory, "missing", "rules.json")
+	name := "changed"
+	if _, err := manager.Update(first.ID, UpdateInput{Name: &name}); err == nil {
+		t.Fatal("Update() succeeded with an unavailable store")
+	}
+	if got := manager.List()[0]; got.Name != "first" {
+		t.Fatalf("Update() changed memory after persistence failure: %+v", got)
+	}
+	if _, err := manager.Reorder([]string{second.ID, first.ID}); err == nil {
+		t.Fatal("Reorder() succeeded with an unavailable store")
+	}
+	listed := manager.List()
+	if listed[0].ID != first.ID || listed[1].ID != second.ID {
+		t.Fatalf("Reorder() changed memory after persistence failure: %+v", listed)
 	}
 }
 

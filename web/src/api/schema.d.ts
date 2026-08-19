@@ -84,6 +84,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dns/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getDnsProfile"];
+        put: operations["updateDnsProfile"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/events": {
         parameters: {
             query?: never;
@@ -126,6 +142,22 @@ export interface paths {
         get: operations["listSubscriptions"];
         put?: never;
         post: operations["createSubscription"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/subscriptions/order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["reorderSubscriptions"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -240,6 +272,22 @@ export interface paths {
         get: operations["listNodePools"];
         put?: never;
         post: operations["createNodePool"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pools/order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["reorderNodePools"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -674,6 +722,11 @@ export interface components {
             /** Format: date-time */
             lastUpdated?: string;
             lastError?: string;
+            /**
+             * @description 上次成功拉取所用的路径（direct 直连 / proxy 代理回退）。
+             * @enum {string}
+             */
+            lastFetchPath?: "direct" | "proxy";
             nodeCount: number;
             nodes?: components["schemas"]["Node"][];
         };
@@ -688,6 +741,9 @@ export interface components {
             name?: string;
             autoUpdate?: boolean;
             updateIntervalMinutes?: number;
+        };
+        SubscriptionOrder: {
+            ids: string[];
         };
         LatencyRequest: {
             nodeIds?: string[];
@@ -807,6 +863,9 @@ export interface components {
             /** Format: date-time */
             updatedAt: string;
         };
+        NodePoolOrder: {
+            ids: string[];
+        };
         CreateNodePool: {
             name: string;
             members: components["schemas"]["NodePoolMemberRef"][];
@@ -922,6 +981,39 @@ export interface components {
             releaseDurationSeconds: number;
             cooldownSeconds: number;
         };
+        DnsServer: {
+            /** @description Unique 1-32 character identifier; lowercase letters, digits, '-' or '_'. */
+            tag: string;
+            /** @enum {string} */
+            type: "udp" | "tcp" | "tls" | "https" | "quic" | "h3" | "local" | "hosts";
+            /** @description IP address or domain of the upstream. Must be empty for local/hosts types. */
+            server?: string;
+            /** @description Override the default port for the server type. */
+            port?: number;
+        };
+        DnsFakeIP: {
+            enabled: boolean;
+            /** @description IPv4 CIDR handed out by the fake-ip responder. Defaults to 198.18.0.0/15. */
+            inet4Range?: string;
+            /** @description IPv6 CIDR handed out by the fake-ip responder. Defaults to fc00::/18. */
+            inet6Range?: string;
+        };
+        DnsProfile: {
+            servers: components["schemas"]["DnsServer"][];
+            /** @description Tag of the server that answers queries matched by no rule. */
+            final: string;
+            /** @enum {string} */
+            strategy: "prefer_ipv4" | "prefer_ipv6" | "ipv4_only" | "ipv6_only";
+            fakeIP: components["schemas"]["DnsFakeIP"];
+        };
+        UpdateDnsProfile: {
+            servers: components["schemas"]["DnsServer"][];
+            /** @description Tag of the fallback server. May be empty when exactly one server is configured. */
+            final: string;
+            /** @enum {string} */
+            strategy: "prefer_ipv4" | "prefer_ipv6" | "ipv4_only" | "ipv6_only";
+            fakeIP: components["schemas"]["DnsFakeIP"];
+        };
         Runtime: {
             /** @enum {string} */
             state: "stopped" | "starting" | "running" | "stopping" | "failed";
@@ -934,6 +1026,8 @@ export interface components {
             nodeName?: string;
             poolId?: string;
             poolName?: string;
+            /** @description Whether LAN devices may route through this proxy. */
+            allowLan?: boolean;
             /** Format: date-time */
             startedAt?: string;
             lastError?: string;
@@ -944,6 +1038,8 @@ export interface components {
             id: string;
             /** @description Remote host (hostname or IP) with destination port. */
             host: string;
+            /** @description Original URL/domain reported by sing-box when available. */
+            url?: string;
             network?: string;
             type?: string;
             /** Format: int64 */
@@ -1000,6 +1096,11 @@ export interface components {
             poolId?: string;
             /** @enum {string} */
             mode: "system-proxy" | "tun";
+            /**
+             * @description Allow other devices on the LAN to route through this proxy.
+             * @default false
+             */
+            allowLan: boolean;
         } & (unknown | unknown);
         CoreInfo: {
             /** @enum {string} */
@@ -1182,6 +1283,54 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    getDnsProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Persisted DNS profile used for TUN-mode name resolution. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DnsProfile"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    updateDnsProfile: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateDnsProfile"];
+            };
+        };
+        responses: {
+            /** @description Updated DNS profile. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DnsProfile"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     streamEvents: {
         parameters: {
             query?: never;
@@ -1267,6 +1416,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Subscription"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    reorderSubscriptions: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubscriptionOrder"];
+            };
+        };
+        responses: {
+            /** @description Subscriptions in their persisted display order. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Subscription"][];
+                    };
                 };
             };
             default: components["responses"]["Error"];
@@ -1507,6 +1685,35 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    reorderNodePools: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NodePoolOrder"];
+            };
+        };
+        responses: {
+            /** @description Node pools in their persisted display order. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["NodePool"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     getNodePool: {
         parameters: {
             query?: never;
@@ -1606,11 +1813,11 @@ export interface operations {
     listLinks: {
         parameters: {
             query?: {
-                /** @description Case-insensitive substring match across host, node, network, type, and chain. */
+                /** @description Case-insensitive substring match across host, URL/domain, node, network, type, and chain. */
                 search?: string;
                 /** @description Filter to live (true) or closed (false) connections. */
                 active?: boolean;
-                /** @description Comma-separated sort keys applied in order. Prefix with - for descending. Keys: host, node, upload, download, uploadRate, downloadRate, startedAt. Active connections always sort before closed ones. */
+                /** @description Comma-separated sort keys applied in order. Prefix with - for descending. Keys: host, url, node, upload, download, uploadRate, downloadRate, startedAt. Active connections always sort before closed ones. */
                 sort?: string;
                 offset?: number;
                 limit?: number;

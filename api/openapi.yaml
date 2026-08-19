@@ -89,6 +89,37 @@ paths:
                 $ref: '#/components/schemas/TrafficPolicy'
         default:
           $ref: '#/components/responses/Error'
+  /api/v1/dns/profile:
+    get:
+      operationId: getDnsProfile
+      responses:
+        '200':
+          description: Persisted DNS profile used for TUN-mode name resolution.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DnsProfile'
+        default:
+          $ref: '#/components/responses/Error'
+    put:
+      operationId: updateDnsProfile
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateDnsProfile'
+      responses:
+        '200':
+          description: Updated DNS profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DnsProfile'
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/events:
     get:
       operationId: streamEvents
@@ -145,6 +176,33 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Subscription'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/subscriptions/order:
+    put:
+      operationId: reorderSubscriptions
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscriptionOrder'
+      responses:
+        '200':
+          description: Subscriptions in their persisted display order.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Subscription'
         default:
           $ref: '#/components/responses/Error'
   /api/v1/subscriptions/{id}:
@@ -304,6 +362,33 @@ paths:
                 $ref: '#/components/schemas/NodePool'
         default:
           $ref: '#/components/responses/Error'
+  /api/v1/pools/order:
+    put:
+      operationId: reorderNodePools
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NodePoolOrder'
+      responses:
+        '200':
+          description: Node pools in their persisted display order.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/NodePool'
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/pools/{id}:
     parameters:
       - name: id
@@ -370,7 +455,7 @@ paths:
           in: query
           schema:
             type: string
-          description: Case-insensitive substring match across host, node, network, type, and chain.
+          description: Case-insensitive substring match across host, URL/domain, node, network, type, and chain.
         - name: active
           in: query
           schema:
@@ -382,7 +467,7 @@ paths:
             type: string
           description: >-
             Comma-separated sort keys applied in order. Prefix with - for descending.
-            Keys: host, node, upload, download, uploadRate, downloadRate, startedAt.
+            Keys: host, url, node, upload, download, uploadRate, downloadRate, startedAt.
             Active connections always sort before closed ones.
         - name: offset
           in: query
@@ -1049,6 +1134,10 @@ components:
           format: date-time
         lastError:
           type: string
+        lastFetchPath:
+          type: string
+          enum: [direct, proxy]
+          description: 上次成功拉取所用的路径（direct 直连 / proxy 代理回退）。
         nodeCount:
           type: integer
         nodes:
@@ -1087,13 +1176,23 @@ components:
           type: integer
           minimum: 15
           maximum: 10080
+    SubscriptionOrder:
+      type: object
+      additionalProperties: false
+      required: [ids]
+      properties:
+        ids:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
     LatencyRequest:
       type: object
       additionalProperties: false
       properties:
         nodeIds:
           type: array
-          maxItems: 128
+          maxItems: 200
           uniqueItems: true
           items:
             type: string
@@ -1378,6 +1477,16 @@ components:
         updatedAt:
           type: string
           format: date-time
+    NodePoolOrder:
+      type: object
+      additionalProperties: false
+      required: [ids]
+      properties:
+        ids:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
     CreateNodePool:
       type: object
       additionalProperties: false
@@ -1659,6 +1768,76 @@ components:
           type: integer
           minimum: 0
           maximum: 86400
+    DnsServer:
+      type: object
+      additionalProperties: false
+      required: [tag, type]
+      properties:
+        tag:
+          type: string
+          description: Unique 1-32 character identifier; lowercase letters, digits, '-' or '_'.
+        type:
+          type: string
+          enum: [udp, tcp, tls, https, quic, h3, local, hosts]
+        server:
+          type: string
+          description: IP address or domain of the upstream. Must be empty for local/hosts types.
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: Override the default port for the server type.
+    DnsFakeIP:
+      type: object
+      additionalProperties: false
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+        inet4Range:
+          type: string
+          description: IPv4 CIDR handed out by the fake-ip responder. Defaults to 198.18.0.0/15.
+        inet6Range:
+          type: string
+          description: IPv6 CIDR handed out by the fake-ip responder. Defaults to fc00::/18.
+    DnsProfile:
+      type: object
+      additionalProperties: false
+      required: [servers, final, strategy, fakeIP]
+      properties:
+        servers:
+          type: array
+          minItems: 1
+          maxItems: 8
+          items:
+            $ref: '#/components/schemas/DnsServer'
+        final:
+          type: string
+          description: Tag of the server that answers queries matched by no rule.
+        strategy:
+          type: string
+          enum: [prefer_ipv4, prefer_ipv6, ipv4_only, ipv6_only]
+        fakeIP:
+          $ref: '#/components/schemas/DnsFakeIP'
+    UpdateDnsProfile:
+      type: object
+      additionalProperties: false
+      required: [servers, final, strategy, fakeIP]
+      properties:
+        servers:
+          type: array
+          minItems: 1
+          maxItems: 8
+          items:
+            $ref: '#/components/schemas/DnsServer'
+        final:
+          type: string
+          description: Tag of the fallback server. May be empty when exactly one server is configured.
+        strategy:
+          type: string
+          enum: [prefer_ipv4, prefer_ipv6, ipv4_only, ipv6_only]
+        fakeIP:
+          $ref: '#/components/schemas/DnsFakeIP'
     Runtime:
       type: object
       additionalProperties: false
@@ -1683,6 +1862,9 @@ components:
           type: string
         poolName:
           type: string
+        allowLan:
+          type: boolean
+          description: Whether LAN devices may route through this proxy.
         startedAt:
           type: string
           format: date-time
@@ -1702,6 +1884,9 @@ components:
         host:
           type: string
           description: Remote host (hostname or IP) with destination port.
+        url:
+          type: string
+          description: Original URL/domain reported by sing-box when available.
         network:
           type: string
         type:
@@ -1797,6 +1982,10 @@ components:
         mode:
           type: string
           enum: [system-proxy, tun]
+        allowLan:
+          type: boolean
+          default: false
+          description: Allow other devices on the LAN to route through this proxy.
     CoreInfo:
       type: object
       additionalProperties: false

@@ -12,6 +12,7 @@ type Subscription struct {
 	SelectedNodeID        string     `json:"selectedNodeId,omitempty"`
 	LastUpdated           *time.Time `json:"lastUpdated,omitempty"`
 	LastError             string     `json:"lastError,omitempty"`
+	LastFetchPath         string     `json:"lastFetchPath,omitempty"`
 	ETag                  string     `json:"etag,omitempty"`
 	LastModified          string     `json:"lastModified,omitempty"`
 	Nodes                 []Node     `json:"nodes"`
@@ -94,6 +95,7 @@ type View struct {
 	SelectedNodeID        string     `json:"selectedNodeId,omitempty"`
 	LastUpdated           *time.Time `json:"lastUpdated,omitempty"`
 	LastError             string     `json:"lastError,omitempty"`
+	LastFetchPath         string     `json:"lastFetchPath,omitempty"`
 	NodeCount             int        `json:"nodeCount"`
 	Nodes                 []NodeView `json:"nodes,omitempty"`
 }
@@ -113,6 +115,7 @@ func toView(subscription Subscription, includeNodes bool) View {
 		SelectedNodeID:        subscription.SelectedNodeID,
 		LastUpdated:           subscription.LastUpdated,
 		LastError:             subscription.LastError,
+		LastFetchPath:         subscription.LastFetchPath,
 		NodeCount:             len(subscription.Nodes),
 	}
 	if includeNodes {

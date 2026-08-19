@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -53,12 +52,25 @@ type Manager struct {
 	parser   Parser
 	events   *events.Broker
 	ruleSink RuleSink
+
+	proxyResolver func() string
+	proxyFetcher  FetchClient
+	proxyAddress  string
 }
 
 func (m *Manager) SetRuleSink(sink RuleSink) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ruleSink = sink
+}
+
+// SetProxyResolver injects a source for the local proxy address (host:port)
+// used as a fetch fallback when the direct request fails. The resolver is
+// expected to return an empty string when no usable proxy is running.
+func (m *Manager) SetProxyResolver(resolve func() string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.proxyResolver = resolve
 }
 
 func OpenManager(dataDirectory string, broker *events.Broker) (*Manager, error) {
@@ -82,17 +94,48 @@ func OpenManager(dataDirectory string, broker *events.Broker) (*Manager, error) 
 func (m *Manager) List() []View {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	return m.listLocked()
+}
+
+func (m *Manager) listLocked() []View {
 	views := make([]View, 0, len(m.items))
 	for _, item := range m.items {
 		views = append(views, toView(item, false))
 	}
-	sort.Slice(views, func(i, j int) bool {
-		if views[i].Active != views[j].Active {
-			return views[i].Active
-		}
-		return strings.ToLower(views[i].Name) < strings.ToLower(views[j].Name)
-	})
 	return views
+}
+
+func (m *Manager) Reorder(ids []string) ([]View, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(ids) != len(m.items) {
+		return nil, fmt.Errorf("order must include every subscription exactly once")
+	}
+	indices := make(map[string]int, len(m.items))
+	for index, item := range m.items {
+		indices[item.ID] = index
+	}
+	seen := make(map[string]struct{}, len(ids))
+	ordered := make([]Subscription, len(ids))
+	for position, id := range ids {
+		index, exists := indices[id]
+		if !exists {
+			return nil, fmt.Errorf("order contains an unknown subscription")
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return nil, fmt.Errorf("order contains a duplicate subscription")
+		}
+		seen[id] = struct{}{}
+		ordered[position] = m.items[index]
+	}
+	previous := m.items
+	m.items = ordered
+	if err := m.persistLocked(); err != nil {
+		m.items = previous
+		return nil, err
+	}
+	m.publish("subscriptions.reordered", map[string]int{"count": len(ids)})
+	return m.listLocked(), nil
 }
 
 func (m *Manager) Get(id string) (View, error) {
@@ -157,6 +200,7 @@ func (m *Manager) Update(id string, input UpdateInput) (View, error) {
 	if index < 0 {
 		return View{}, ErrNotFound
 	}
+	previous := m.items[index]
 	if input.Name != nil {
 		name := strings.TrimSpace(*input.Name)
 		if name == "" || len(name) > 80 {
@@ -174,6 +218,7 @@ func (m *Manager) Update(id string, input UpdateInput) (View, error) {
 		m.items[index].UpdateIntervalMinutes = *input.UpdateIntervalMinutes
 	}
 	if err := m.persistLocked(); err != nil {
+		m.items[index] = previous
 		return View{}, err
 	}
 	return toView(m.items[index], true), nil
@@ -223,10 +268,12 @@ func (m *Manager) Activate(id string) (View, error) {
 	if index < 0 {
 		return View{}, ErrNotFound
 	}
+	previous := append([]Subscription(nil), m.items...)
 	for itemIndex := range m.items {
 		m.items[itemIndex].Active = itemIndex == index
 	}
 	if err := m.persistLocked(); err != nil {
+		m.items = previous
 		return View{}, err
 	}
 	m.publish("subscription.activated", map[string]string{"subscriptionId": id})
@@ -250,8 +297,10 @@ func (m *Manager) SelectNode(subscriptionID, nodeID string) (View, error) {
 	if !found {
 		return View{}, fmt.Errorf("node not found")
 	}
+	previous := m.items[index].SelectedNodeID
 	m.items[index].SelectedNodeID = nodeID
 	if err := m.persistLocked(); err != nil {
+		m.items[index].SelectedNodeID = previous
 		return View{}, err
 	}
 	m.publish("node.selected", map[string]string{"subscriptionId": subscriptionID, "nodeId": nodeID})
@@ -330,7 +379,7 @@ func (m *Manager) refresh(ctx context.Context, id string, conditional bool) erro
 	if conditional {
 		etag, lastModified = item.ETag, item.LastModified
 	}
-	content, metadata, err := m.fetcher.Fetch(ctx, item.URL, etag, lastModified)
+	content, metadata, err := m.fetchWithFallback(ctx, item.URL, etag, lastModified)
 	if err != nil {
 		m.recordRefreshError(id, err)
 		return err
@@ -368,6 +417,9 @@ func (m *Manager) refresh(ctx context.Context, id string, conditional bool) erro
 	}
 	m.items[index].LastUpdated = &now
 	m.items[index].LastError = ""
+	if metadata.Path != "" {
+		m.items[index].LastFetchPath = metadata.Path
+	}
 	if metadata.ETag != "" {
 		m.items[index].ETag = metadata.ETag
 	}
@@ -399,7 +451,7 @@ func (m *Manager) refresh(ctx context.Context, id string, conditional bool) erro
 			return err
 		}
 	}
-	m.publish("subscription.updated", map[string]any{"subscriptionId": id, "nodeCount": nodeCount})
+	m.publish("subscription.updated", map[string]any{"subscriptionId": id, "nodeCount": nodeCount, "path": metadata.Path})
 	return nil
 }
 
@@ -433,6 +485,51 @@ func (m *Manager) dueForUpdate(now time.Time) []string {
 		}
 	}
 	return ids
+}
+
+// fetchWithFallback tries the direct fetch first and, when it fails and a local
+// proxy is available, retries once through that proxy. The returned error wraps
+// both attempts when both fail.
+func (m *Manager) fetchWithFallback(ctx context.Context, rawURL, etag, lastModified string) ([]byte, FetchMetadata, error) {
+	content, metadata, directErr := m.fetcher.Fetch(ctx, rawURL, etag, lastModified)
+	if directErr == nil {
+		return content, metadata, nil
+	}
+	proxy := m.proxy()
+	if proxy == nil {
+		return nil, FetchMetadata{}, directErr
+	}
+	content, metadata, proxyErr := proxy.Fetch(ctx, rawURL, etag, lastModified)
+	if proxyErr == nil {
+		metadata.Path = "proxy"
+		return content, metadata, nil
+	}
+	return nil, FetchMetadata{}, fmt.Errorf("direct: %v; proxy: %w", directErr, proxyErr)
+}
+
+// proxy returns a cached fetcher bound to the current local proxy address, or
+// nil when no proxy is configured/running. The fetcher is rebuilt when the
+// resolved address changes.
+func (m *Manager) proxy() FetchClient {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.proxyResolver == nil {
+		return nil
+	}
+	address := strings.TrimSpace(m.proxyResolver())
+	if address == "" {
+		m.proxyFetcher, m.proxyAddress = nil, ""
+		return nil
+	}
+	if m.proxyFetcher != nil && m.proxyAddress == address {
+		return m.proxyFetcher
+	}
+	fetcher, err := NewProxyFetcher(address)
+	if err != nil {
+		return nil
+	}
+	m.proxyFetcher, m.proxyAddress = fetcher, address
+	return fetcher
 }
 
 func (m *Manager) recordRefreshError(id string, refreshError error) {
