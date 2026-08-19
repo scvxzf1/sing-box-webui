@@ -45,14 +45,15 @@ type RuleSink interface {
 }
 
 type Manager struct {
-	mu        sync.RWMutex
-	refreshMu sync.Mutex
-	path      string
-	items     []Subscription
-	fetcher   FetchClient
-	parser    Parser
-	events    *events.Broker
-	ruleSink  RuleSink
+	mu           sync.RWMutex
+	refreshMu    sync.Mutex
+	refreshLocks map[string]*sync.Mutex
+	path         string
+	items        []Subscription
+	fetcher      FetchClient
+	parser       Parser
+	events       *events.Broker
+	ruleSink     RuleSink
 
 	proxyResolver func() string
 	proxyFetcher  FetchClient
@@ -190,7 +191,9 @@ func (m *Manager) Create(ctx context.Context, input CreateInput) (View, error) {
 	}
 	m.mu.Unlock()
 
-	_ = m.Refresh(ctx, item.ID)
+	if err := m.Refresh(ctx, item.ID); err != nil {
+		return View{}, err
+	}
 	return m.Get(item.ID)
 }
 
@@ -361,7 +364,17 @@ func (m *Manager) refresh(ctx context.Context, id string, conditional bool) erro
 	// Serialize refreshes so a slower request cannot overwrite a newer parse or
 	// publish a stale failure after a successful refresh.
 	m.refreshMu.Lock()
-	defer m.refreshMu.Unlock()
+	if m.refreshLocks == nil {
+		m.refreshLocks = make(map[string]*sync.Mutex)
+	}
+	refreshLock := m.refreshLocks[id]
+	if refreshLock == nil {
+		refreshLock = &sync.Mutex{}
+		m.refreshLocks[id] = refreshLock
+	}
+	m.refreshMu.Unlock()
+	refreshLock.Lock()
+	defer refreshLock.Unlock()
 
 	m.mu.RLock()
 	index := m.indexOf(id)

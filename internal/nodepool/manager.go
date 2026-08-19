@@ -212,6 +212,9 @@ func (m *Manager) Create(input CreateInput) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
+	if err := m.validateMembers(pool.Members); err != nil {
+		return View{}, err
+	}
 	m.mu.Lock()
 	m.items = append(m.items, pool)
 	if err := m.persistLocked(); err != nil {
@@ -272,6 +275,10 @@ func (m *Manager) Update(id string, input UpdateInput) (View, error) {
 		m.mu.Unlock()
 		return View{}, err
 	}
+	if err := m.validateMembers(updated.Members); err != nil {
+		m.mu.Unlock()
+		return View{}, err
+	}
 	updated.UpdatedAt = time.Now().UTC()
 	previous := m.items[index]
 	m.items[index] = updated
@@ -282,6 +289,15 @@ func (m *Manager) Update(id string, input UpdateInput) (View, error) {
 	}
 	m.mu.Unlock()
 	return m.toView(updated), nil
+}
+
+func (m *Manager) validateMembers(members []Member) error {
+	for _, member := range members {
+		if _, _, err := m.subscriptions.SelectedNode(member.SubscriptionID, member.NodeID); err != nil {
+			return fmt.Errorf("node pool member %s/%s is unavailable: %w", member.SubscriptionID, member.NodeID, err)
+		}
+	}
+	return nil
 }
 
 func (m *Manager) Delete(id string) error {

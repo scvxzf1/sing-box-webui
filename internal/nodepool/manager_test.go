@@ -40,13 +40,12 @@ func TestManagerPersistsAndResolvesCrossSubscriptionMembers(t *testing.T) {
 		Name: "Primary", Members: []Member{
 			{SubscriptionID: "sub-a", NodeID: "node-a"},
 			{SubscriptionID: "sub-b", NodeID: "node-b"},
-			{SubscriptionID: "missing", NodeID: "missing"},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.AvailableCount != 2 || created.MemberCount != 3 {
+	if created.AvailableCount != 2 || created.MemberCount != 2 {
 		t.Fatalf("unexpected member counts: %+v", created)
 	}
 	pool, nodes, err := manager.Resolve(created.ID)
@@ -94,12 +93,8 @@ func TestResolveRejectsPoolWithFewerThanTwoAvailableMembers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := manager.Create(CreateInput{Name: "Unavailable", Members: []Member{{SubscriptionID: "missing", NodeID: "one"}, {SubscriptionID: "missing", NodeID: "two"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := manager.Resolve(created.ID); err == nil {
-		t.Fatal("Resolve() error = nil, want unavailable member error")
+	if _, err := manager.Create(CreateInput{Name: "Unavailable", Members: []Member{{SubscriptionID: "missing", NodeID: "one"}, {SubscriptionID: "missing", NodeID: "two"}}}); err == nil {
+		t.Fatal("Create() accepted unavailable member")
 	}
 }
 
