@@ -26,7 +26,7 @@ func (s *Server) dnsProfileResource(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.dns.Reload(); err != nil {
-			writeError(w, r, http.StatusConflict, "runtime_reapply_failed", "DNS profile was saved but the running proxy could not reload it: "+err.Error())
+			s.writeInternalError(w, r, http.StatusConflict, "runtime_reapply_failed", "DNS profile was saved but the running proxy could not reload it", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, profile)

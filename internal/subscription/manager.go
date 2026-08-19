@@ -44,6 +44,11 @@ type RuleSink interface {
 	ReloadRules() error
 }
 
+type PoolSink interface {
+	ReconcileSubscriptionNodes(subscriptionID string, previous, current []Node) error
+	DeleteSubscriptionMembers(subscriptionID string) error
+}
+
 type Manager struct {
 	mu           sync.RWMutex
 	refreshMu    sync.Mutex
@@ -54,6 +59,7 @@ type Manager struct {
 	parser       Parser
 	events       *events.Broker
 	ruleSink     RuleSink
+	poolSink     PoolSink
 
 	proxyResolver func() string
 	proxyFetcher  FetchClient
@@ -69,6 +75,12 @@ func (m *Manager) SetRuleSink(sink RuleSink) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ruleSink = sink
+}
+
+func (m *Manager) SetPoolSink(sink PoolSink) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.poolSink = sink
 }
 
 // SetProxyResolver injects a source for the local proxy address (host:port)
@@ -261,12 +273,23 @@ func (m *Manager) Delete(id string) error {
 		return err
 	}
 	sink := m.ruleSink
+	poolSink := m.poolSink
 	m.mu.Unlock()
+	var cleanupErrors []error
+	if poolSink != nil {
+		if err := poolSink.DeleteSubscriptionMembers(id); err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("node pool cleanup failed: %w", err))
+		}
+	}
 	if sink != nil {
 		if err := sink.DeleteSubscriptionRules(id); err != nil {
-			return fmt.Errorf("subscription deleted but rules cleanup failed: %w", err)
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("rules cleanup failed: %w", err))
+		} else if err := sink.ReloadRules(); err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("rules reload failed: %w", err))
 		}
-		return sink.ReloadRules()
+	}
+	if err := errors.Join(cleanupErrors...); err != nil {
+		return fmt.Errorf("subscription deleted but dependent cleanup failed: %w", err)
 	}
 	return nil
 }
@@ -390,6 +413,7 @@ func (m *Manager) refresh(ctx context.Context, id string, conditional bool) erro
 	}
 	item := m.items[index]
 	ruleSink := m.ruleSink
+	poolSink := m.poolSink
 	m.mu.RUnlock()
 
 	etag, lastModified := "", ""
@@ -450,7 +474,14 @@ func (m *Manager) refresh(ctx context.Context, id string, conditional bool) erro
 	}
 	name := m.items[index].Name
 	nodeCount := len(m.items[index].Nodes)
+	currentNodes := append([]Node(nil), m.items[index].Nodes...)
 	m.mu.Unlock()
+	if poolSink != nil {
+		if err := poolSink.ReconcileSubscriptionNodes(id, previous.Nodes, currentNodes); err != nil {
+			m.recordRefreshError(id, fmt.Errorf("subscription updated but node pool reconciliation failed: %w", err))
+			return err
+		}
+	}
 	if !metadata.NotModified && ruleSink != nil {
 		if err := ruleSink.SyncSubscriptionRules(id, name, result.ImportedRules); err != nil {
 			m.recordRefreshError(id, fmt.Errorf("subscription updated but rules sync failed: %w", err))

@@ -103,7 +103,7 @@ func (s *Server) reapplyRules(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 	if _, err := s.control.ReapplyRules(r.Context()); err != nil {
-		writeError(w, r, http.StatusConflict, "runtime_reapply_failed", "Rule was saved but the running proxy could not reload it: "+err.Error())
+		s.writeInternalError(w, r, http.StatusConflict, "runtime_reapply_failed", "Rule was saved but the running proxy could not reload it", err)
 		return false
 	}
 	return true

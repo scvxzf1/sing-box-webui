@@ -72,6 +72,7 @@ func main() {
 		logger.Error("open node pool store", "error", err)
 		os.Exit(1)
 	}
+	subscriptions.SetPoolSink(pools)
 
 	bootstrapCtx, cancelBootstrap := context.WithTimeout(context.Background(), 30*time.Second)
 	coreManager, err := core.Open(bootstrapCtx, config.DataDir, config.SingBoxBinary)

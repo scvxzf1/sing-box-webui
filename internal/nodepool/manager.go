@@ -3,6 +3,7 @@ package nodepool
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -301,6 +302,125 @@ func (m *Manager) validateMembers(members []Member) error {
 		}
 	}
 	return nil
+}
+
+func (m *Manager) ReconcileSubscriptionNodes(subscriptionID string, previous, current []subscription.Node) error {
+	previousByID := make(map[string]subscription.Node, len(previous))
+	for _, node := range previous {
+		previousByID[node.ID] = node
+	}
+	currentByIdentity := make(map[string]string, len(current))
+	currentByID := make(map[string]struct{}, len(current))
+	for _, node := range current {
+		currentByID[node.ID] = struct{}{}
+		identity := nodeIdentity(node)
+		if _, exists := currentByIdentity[identity]; exists {
+			currentByIdentity[identity] = ""
+		} else {
+			currentByIdentity[identity] = node.ID
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	previousItems := clonePools(m.items)
+	changed := false
+	for index := range m.items {
+		pool := &m.items[index]
+		poolChanged := false
+		members := make([]Member, 0, len(pool.Members))
+		seen := make(map[string]struct{}, len(pool.Members))
+		for _, member := range pool.Members {
+			if member.SubscriptionID != subscriptionID {
+				members = append(members, member)
+				continue
+			}
+			nextID := member.NodeID
+			if _, ok := currentByID[nextID]; !ok {
+				if old, ok := previousByID[member.NodeID]; ok {
+					nextID = currentByIdentity[nodeIdentity(old)]
+				}
+			}
+			if nextID == "" {
+				poolChanged = true
+				continue
+			}
+			key := member.SubscriptionID + "\x00" + nextID
+			if _, duplicate := seen[key]; duplicate {
+				poolChanged = true
+				continue
+			}
+			seen[key] = struct{}{}
+			if nextID != member.NodeID {
+				poolChanged = true
+				member.NodeID = nextID
+			}
+			members = append(members, member)
+		}
+		if len(members) != len(pool.Members) {
+			poolChanged = true
+		}
+		pool.Members = members
+		if poolChanged {
+			changed = true
+			pool.UpdatedAt = time.Now().UTC()
+		}
+	}
+	if !changed {
+		return nil
+	}
+	if err := m.persistLocked(); err != nil {
+		m.items = previousItems
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) DeleteSubscriptionMembers(subscriptionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	previousItems := clonePools(m.items)
+	changed := false
+	for index := range m.items {
+		pool := &m.items[index]
+		members := pool.Members[:0]
+		for _, member := range pool.Members {
+			if member.SubscriptionID == subscriptionID {
+				changed = true
+				continue
+			}
+			members = append(members, member)
+		}
+		if len(members) != len(pool.Members) {
+			pool.Members = members
+			pool.UpdatedAt = time.Now().UTC()
+		}
+	}
+	if !changed {
+		return nil
+	}
+	if err := m.persistLocked(); err != nil {
+		m.items = previousItems
+		return err
+	}
+	return nil
+}
+
+func nodeIdentity(node subscription.Node) string {
+	node.ID = ""
+	node.Name = ""
+	content, _ := json.Marshal(node)
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
+}
+
+func clonePools(items []Pool) []Pool {
+	cloned := make([]Pool, len(items))
+	for index, item := range items {
+		cloned[index] = item
+		cloned[index].Members = append([]Member(nil), item.Members...)
+		cloned[index].FallbackProbeURLs = append([]string(nil), item.FallbackProbeURLs...)
+	}
+	return cloned
 }
 
 func (m *Manager) Delete(id string) error {

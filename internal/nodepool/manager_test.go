@@ -109,6 +109,53 @@ func TestResolveRejectsPoolWithFewerThanTwoAvailableMembers(t *testing.T) {
 	}
 }
 
+func TestReconcileSubscriptionNodesMigratesAndPrunesMembers(t *testing.T) {
+	t.Parallel()
+	oldStable := subscription.Node{ID: "old-stable", Name: "Old name", Type: "trojan", Server: "proxy.example.com", Port: 443, Password: "secret"}
+	oldRemoved := subscription.Node{ID: "old-removed", Name: "Removed", Type: "trojan", Server: "removed.example.com", Port: 443, Password: "secret"}
+	newStable := oldStable
+	newStable.ID, newStable.Name = "new-stable", "New name"
+	manager := &Manager{
+		path: filepath.Join(t.TempDir(), "pools.json"),
+		items: []Pool{{ID: "pool-1", Members: []Member{
+			{SubscriptionID: "sub-1", NodeID: oldStable.ID},
+			{SubscriptionID: "sub-1", NodeID: oldRemoved.ID},
+			{SubscriptionID: "sub-2", NodeID: "other"},
+		}}},
+	}
+	if err := manager.ReconcileSubscriptionNodes("sub-1", []subscription.Node{oldStable, oldRemoved}, []subscription.Node{newStable}); err != nil {
+		t.Fatal(err)
+	}
+	got := manager.items[0].Members
+	if len(got) != 2 || got[0].NodeID != newStable.ID || got[1].SubscriptionID != "sub-2" {
+		t.Fatalf("reconciled members = %+v", got)
+	}
+	reloaded := &Manager{path: manager.path}
+	if err := reloaded.load(); err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.items[0].Members; len(got) != 2 || got[0].NodeID != newStable.ID {
+		t.Fatalf("persisted reconciled members = %+v", got)
+	}
+}
+
+func TestDeleteSubscriptionMembersRemovesEveryReference(t *testing.T) {
+	t.Parallel()
+	manager := &Manager{
+		path: filepath.Join(t.TempDir(), "pools.json"),
+		items: []Pool{
+			{ID: "pool-1", Members: []Member{{SubscriptionID: "sub-1", NodeID: "one"}, {SubscriptionID: "sub-2", NodeID: "two"}}},
+			{ID: "pool-2", Members: []Member{{SubscriptionID: "sub-1", NodeID: "three"}}},
+		},
+	}
+	if err := manager.DeleteSubscriptionMembers("sub-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(manager.items[0].Members) != 1 || manager.items[0].Members[0].SubscriptionID != "sub-2" || len(manager.items[1].Members) != 0 {
+		t.Fatalf("subscription members were not removed: %+v", manager.items)
+	}
+}
+
 func TestReorderPersistsNodePoolOrder(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
