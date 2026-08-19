@@ -38,7 +38,7 @@ const (
 
 // DefaultTUNAddress is the IPv4 CIDR assigned to the system TUN inbound. It is
 // configurable at startup so deployments can avoid local or container routes.
-var DefaultTUNAddress = "100.64.0.1/30"
+var DefaultTUNAddress = "198.20.0.1/30"
 
 func BuildConfig(node subscription.Node, mode ProxyMode, mixedPort uint16) ([]byte, error) {
 	return BuildConfigWithRules(node, mode, mixedPort, nil)

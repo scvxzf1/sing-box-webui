@@ -101,7 +101,7 @@ func TestCreateRejectsNonHTTPSubscriptionURL(t *testing.T) {
 	}
 }
 
-func TestRefreshRollsBackSubscriptionWhenRuleSyncFails(t *testing.T) {
+func TestRefreshRetainsSubscriptionWhenRuleSyncFails(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
 	sink := &fakeRuleSink{syncErr: errors.New("rule store unavailable")}
@@ -121,12 +121,12 @@ func TestRefreshRollsBackSubscriptionWhenRuleSyncFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(view.Nodes) != 1 || view.Nodes[0].ID != "old" {
-		t.Fatalf("subscription was not rolled back: %#v", view.Nodes)
+	if len(view.Nodes) != 1 || view.Nodes[0].ID == "old" {
+		t.Fatalf("subscription update was lost: %#v", view.Nodes)
 	}
 }
 
-func TestDeleteRollsBackWhenRuleDeletionFails(t *testing.T) {
+func TestDeleteCommitsWhenRuleDeletionFails(t *testing.T) {
 	t.Parallel()
 	manager := &Manager{
 		path:     filepath.Join(t.TempDir(), "subscriptions.json"),
@@ -139,8 +139,8 @@ func TestDeleteRollsBackWhenRuleDeletionFails(t *testing.T) {
 	if err := manager.Delete("sub-1"); err == nil {
 		t.Fatal("Delete() succeeded despite rule deletion failure")
 	}
-	if len(manager.List()) != 1 {
-		t.Fatal("subscription deletion was not rolled back")
+	if len(manager.List()) != 0 {
+		t.Fatal("subscription deletion was not committed")
 	}
 }
 

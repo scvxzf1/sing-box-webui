@@ -122,7 +122,11 @@ func (s *Server) refreshSubscription(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, r, err)
 		return
 	}
-	item, _ := s.subscriptions.Get(r.PathValue("id"))
+	item, err := s.subscriptions.Get(r.PathValue("id"))
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, item)
 }
 

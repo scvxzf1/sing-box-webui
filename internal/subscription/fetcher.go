@@ -81,7 +81,14 @@ func NewFetcher() *HTTPFetcher {
 // resolved and connected by the proxy itself, so unlike the direct fetcher no
 // local DNS/public-address checks are applied to the dial.
 func NewProxyFetcher(proxyAddress string) (*HTTPFetcher, error) {
-	proxyURL, err := url.Parse("http://" + proxyAddress)
+	host, port, err := net.SplitHostPort(strings.TrimSpace(proxyAddress))
+	if err != nil || host == "" || port == "" {
+		return nil, fmt.Errorf("proxy address must be host:port")
+	}
+	if ip := net.ParseIP(strings.Trim(host, "[]")); ip == nil || !ip.IsLoopback() {
+		return nil, fmt.Errorf("proxy address must be a loopback address")
+	}
+	proxyURL, err := url.Parse("http://" + net.JoinHostPort(host, port))
 	if err != nil {
 		return nil, fmt.Errorf("parse proxy address: %w", err)
 	}

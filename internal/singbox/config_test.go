@@ -41,7 +41,7 @@ func TestBuildConfig(t *testing.T) {
 		if mode == ModeTUN {
 			inbound := config["inbounds"].([]any)[0].(map[string]any)
 			addresses := inbound["address"].([]any)
-			if len(addresses) != 2 || addresses[0] != "100.64.0.1/30" || addresses[1] != "fdfe:dcba:9876::1/126" {
+			if len(addresses) != 2 || addresses[0] != "198.20.0.1/30" || addresses[1] != "fdfe:dcba:9876::1/126" {
 				t.Fatalf("unexpected TUN addresses: %+v", addresses)
 			}
 			dns := config["dns"].(map[string]any)

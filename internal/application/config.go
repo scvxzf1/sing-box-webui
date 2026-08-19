@@ -16,7 +16,7 @@ const (
 	DefaultAddress    = "127.0.0.1:33334"
 	DefaultDevOrigin  = "http://127.0.0.1:33333"
 	DefaultMixedPort  = 2080
-	DefaultTUNAddress = "100.64.0.1/30"
+	DefaultTUNAddress = "198.20.0.1/30"
 )
 
 type Config struct {

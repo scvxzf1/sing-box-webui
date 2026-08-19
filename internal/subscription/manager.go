@@ -45,13 +45,14 @@ type RuleSink interface {
 }
 
 type Manager struct {
-	mu       sync.RWMutex
-	path     string
-	items    []Subscription
-	fetcher  FetchClient
-	parser   Parser
-	events   *events.Broker
-	ruleSink RuleSink
+	mu        sync.RWMutex
+	refreshMu sync.Mutex
+	path      string
+	items     []Subscription
+	fetcher   FetchClient
+	parser    Parser
+	events    *events.Broker
+	ruleSink  RuleSink
 
 	proxyResolver func() string
 	proxyFetcher  FetchClient
@@ -243,19 +244,11 @@ func (m *Manager) Delete(id string) error {
 		return err
 	}
 	sink := m.ruleSink
-	if sink != nil {
-		if err := sink.DeleteSubscriptionRules(id); err != nil {
-			m.items = previousItems
-			rollbackErr := m.persistLocked()
-			m.mu.Unlock()
-			if rollbackErr != nil {
-				return fmt.Errorf("delete subscription rules: %v; rollback subscription: %w", err, rollbackErr)
-			}
-			return err
-		}
-	}
 	m.mu.Unlock()
 	if sink != nil {
+		if err := sink.DeleteSubscriptionRules(id); err != nil {
+			return fmt.Errorf("subscription deleted but rules cleanup failed: %w", err)
+		}
 		return sink.ReloadRules()
 	}
 	return nil
@@ -365,6 +358,11 @@ func (m *Manager) Refresh(ctx context.Context, id string) error {
 }
 
 func (m *Manager) refresh(ctx context.Context, id string, conditional bool) error {
+	// Serialize refreshes so a slower request cannot overwrite a newer parse or
+	// publish a stale failure after a successful refresh.
+	m.refreshMu.Lock()
+	defer m.refreshMu.Unlock()
+
 	m.mu.RLock()
 	index := m.indexOf(id)
 	if index < 0 {
@@ -431,21 +429,14 @@ func (m *Manager) refresh(ctx context.Context, id string, conditional bool) erro
 		m.mu.Unlock()
 		return err
 	}
-	if !metadata.NotModified && ruleSink != nil {
-		if err := ruleSink.SyncSubscriptionRules(id, m.items[index].Name, result.ImportedRules); err != nil {
-			m.items[index] = previous
-			rollbackErr := m.persistLocked()
-			m.mu.Unlock()
-			if rollbackErr != nil {
-				return fmt.Errorf("sync subscription rules: %v; rollback subscription: %w", err, rollbackErr)
-			}
-			m.recordRefreshError(id, err)
-			return err
-		}
-	}
+	name := m.items[index].Name
 	nodeCount := len(m.items[index].Nodes)
 	m.mu.Unlock()
 	if !metadata.NotModified && ruleSink != nil {
+		if err := ruleSink.SyncSubscriptionRules(id, name, result.ImportedRules); err != nil {
+			m.recordRefreshError(id, fmt.Errorf("subscription updated but rules sync failed: %w", err))
+			return err
+		}
 		if err := ruleSink.ReloadRules(); err != nil {
 			m.recordRefreshError(id, err)
 			return err

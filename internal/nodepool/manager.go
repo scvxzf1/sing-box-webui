@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -475,7 +476,7 @@ func validatePool(pool Pool) (Pool, error) {
 	pool.ProbeIntervalSeconds, pool.ToleranceMS = interval, tolerance
 	normalizePoolDefaults(&pool)
 	parsedURL, err := url.ParseRequestURI(pool.ProbeURL)
-	if err != nil || parsedURL.Scheme != "https" || parsedURL.Host == "" || len(pool.ProbeURL) > 2048 {
+	if err != nil || parsedURL.Scheme != "https" || parsedURL.Host == "" || len(pool.ProbeURL) > 2048 || blockedProbeHost(parsedURL.Hostname()) {
 		return Pool{}, fmt.Errorf("probe URL must be a valid HTTPS URL")
 	}
 	if pool.IdleTimeoutSeconds < 60 || pool.IdleTimeoutSeconds > 24*60*60 {
@@ -492,7 +493,7 @@ func validatePool(pool Pool) (Pool, error) {
 	for _, value := range pool.FallbackProbeURLs {
 		value = strings.TrimSpace(value)
 		parsedFallback, parseErr := url.ParseRequestURI(value)
-		if parseErr != nil || parsedFallback.Scheme != "https" || parsedFallback.Host == "" || len(value) > 2048 {
+		if parseErr != nil || parsedFallback.Scheme != "https" || parsedFallback.Host == "" || len(value) > 2048 || blockedProbeHost(parsedFallback.Hostname()) {
 			return Pool{}, fmt.Errorf("fallback probe URLs must be valid HTTPS URLs")
 		}
 		if _, exists := seenURLs[value]; exists {
@@ -515,6 +516,11 @@ func validatePool(pool Pool) (Pool, error) {
 		return Pool{}, fmt.Errorf("maximum backoff must be between 15 and 3600 seconds")
 	}
 	return pool, nil
+}
+
+func blockedProbeHost(host string) bool {
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast())
 }
 
 func normalizePoolDefaults(pool *Pool) {
