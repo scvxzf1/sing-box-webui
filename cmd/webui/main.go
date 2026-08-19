@@ -48,6 +48,7 @@ func main() {
 	}
 
 	netresolve.DefaultDohEndpoint = config.DohEndpoint
+	singbox.DefaultTUNAddress = config.TUNAddress
 
 	broker := events.NewBroker(128, 16)
 	subscriptions, err := subscription.OpenManager(filepath.Join(config.DataDir, "subscriptions"), broker)

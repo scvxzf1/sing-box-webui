@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -59,6 +60,22 @@ func TestParserSanitizesTUICUUIDWithUserSegment(t *testing.T) {
 	}
 	if node.UUID != uuid {
 		t.Fatalf("UUID = %q, want sanitized %q", node.UUID, uuid)
+	}
+}
+
+func TestParserRejectsInvalidShadowsocks2022Key(t *testing.T) {
+	t.Parallel()
+
+	_, err := nodeFromOutbound(map[string]any{
+		"type":        "shadowsocks",
+		"tag":         "bad-ss2022",
+		"server":      "1.2.3.4",
+		"server_port": float64(443),
+		"method":      "2022-blake3-aes-256-gcm",
+		"password":    "bauhMwAMsQqSGowhSUxTeC9iTyEW2YNtWJ9v1Svj7JpZ",
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires a base64 key of 32 bytes") {
+		t.Fatalf("invalid SS2022 key error = %v", err)
 	}
 }
 

@@ -2,6 +2,7 @@ package singbox
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,7 +41,7 @@ func TestBuildConfig(t *testing.T) {
 		if mode == ModeTUN {
 			inbound := config["inbounds"].([]any)[0].(map[string]any)
 			addresses := inbound["address"].([]any)
-			if len(addresses) != 2 || addresses[0] != "198.18.0.1/30" || addresses[1] != "fdfe:dcba:9876::1/126" {
+			if len(addresses) != 2 || addresses[0] != "100.64.0.1/30" || addresses[1] != "fdfe:dcba:9876::1/126" {
 				t.Fatalf("unexpected TUN addresses: %+v", addresses)
 			}
 			dns := config["dns"].(map[string]any)
@@ -52,6 +53,18 @@ func TestBuildConfig(t *testing.T) {
 				t.Fatalf("unexpected TUN DNS route rule: %+v", rules)
 			}
 		}
+	}
+}
+
+func TestBuildConfigRejectsOverlappingTUNAndFakeIPRanges(t *testing.T) {
+	t.Parallel()
+	err := validateTUNProfileAddress(ModeTUN, dnsprofile.Profile{
+		Servers: []dnsprofile.Server{{Tag: "dns", Type: "udp", Server: "8.8.8.8"}},
+		Final:   "dns", Strategy: dnsprofile.StrategyPreferIPv4,
+		FakeIP: dnsprofile.FakeIP{Enabled: true, Inet4Range: "198.18.0.0/15", Inet6Range: "fc00::/18"},
+	}, "198.18.0.1/30")
+	if err == nil || !strings.Contains(err.Error(), "overlaps Fake IP") {
+		t.Fatalf("overlap error = %v", err)
 	}
 }
 

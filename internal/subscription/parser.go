@@ -542,6 +542,12 @@ func validateNode(node Node) error {
 		if node.Method == "" || node.Password == "" {
 			return fmt.Errorf("shadowsocks method and password are required")
 		}
+		if expected, ok := shadowsocks2022KeyLength(node.Method); ok {
+			decoded, err := decodeBase64(node.Password)
+			if err != nil || len(decoded) != expected {
+				return fmt.Errorf("shadowsocks method %s requires a base64 key of %d bytes", node.Method, expected)
+			}
+		}
 	case "vless", "vmess", "tuic":
 		if node.UUID == "" {
 			return fmt.Errorf("UUID is required")
@@ -555,6 +561,23 @@ func validateNode(node Node) error {
 		}
 	}
 	return nil
+}
+
+// ValidateNode validates a parsed or persisted node before it is compiled into
+// a sing-box outbound. Persisted data may predate newer parser validation.
+func ValidateNode(node Node) error {
+	return validateNode(node)
+}
+
+func shadowsocks2022KeyLength(method string) (int, bool) {
+	switch method {
+	case "2022-blake3-aes-128-gcm":
+		return 16, true
+	case "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305":
+		return 32, true
+	default:
+		return 0, false
+	}
 }
 
 func deduplicate(result ParseResult) ParseResult {

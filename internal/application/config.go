@@ -13,9 +13,10 @@ import (
 )
 
 const (
-	DefaultAddress   = "127.0.0.1:33334"
-	DefaultDevOrigin = "http://127.0.0.1:33333"
-	DefaultMixedPort = 2080
+	DefaultAddress    = "127.0.0.1:33334"
+	DefaultDevOrigin  = "http://127.0.0.1:33333"
+	DefaultMixedPort  = 2080
+	DefaultTUNAddress = "100.64.0.1/30"
 )
 
 type Config struct {
@@ -29,6 +30,7 @@ type Config struct {
 	WebToken       string
 	ConfigPath     string
 	DohEndpoint    string
+	TUNAddress     string
 }
 
 type projectConfig struct {
@@ -43,6 +45,7 @@ func LoadConfig() (Config, error) {
 		Address:       envOrDefault("SING_BOX_WEBUI_ADDR", DefaultAddress),
 		DevOrigin:     envOrDefault("SING_BOX_WEBUI_DEV_ORIGIN", DefaultDevOrigin),
 		DohEndpoint:   envOrDefault("SING_BOX_WEBUI_DOH_ENDPOINT", "https://1.12.12.12/dns-query"),
+		TUNAddress:    envOrDefault("SING_BOX_WEBUI_TUN_ADDRESS", DefaultTUNAddress),
 		SingBoxBinary: strings.TrimSpace(os.Getenv("SING_BOX_BIN")),
 		EnableTUN:     parseEnvBool("SING_BOX_WEBUI_ENABLE_TUN"),
 		MixedPort:     DefaultMixedPort,

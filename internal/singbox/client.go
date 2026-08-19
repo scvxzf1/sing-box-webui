@@ -7,10 +7,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
 const maxCommandOutput = 64 << 10
+
+var sensitiveCommandField = regexp.MustCompile(`(?i)("(?:password|uuid|secret|token)"\s*:\s*)"[^"]*"`)
 
 type Client struct {
 	binary string
@@ -30,7 +33,23 @@ type CommandError struct {
 }
 
 func (e *CommandError) Error() string {
-	return fmt.Sprintf("sing-box %s failed: %v", e.Operation, e.Err)
+	message := fmt.Sprintf("sing-box %s failed: %v", e.Operation, e.Err)
+	if detail := sanitizeCommandOutput(e.Output); detail != "" {
+		return message + ": " + detail
+	}
+	return message
+}
+
+func sanitizeCommandOutput(output string) string {
+	detail := strings.Join(strings.Fields(output), " ")
+	if detail == "" {
+		return ""
+	}
+	detail = sensitiveCommandField.ReplaceAllString(detail, `${1}"<redacted>"`)
+	if len(detail) > 2048 {
+		detail = detail[:2048] + "..."
+	}
+	return detail
 }
 
 func (e *CommandError) Unwrap() error {

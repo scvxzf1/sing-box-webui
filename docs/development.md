@@ -84,10 +84,15 @@ SING_BOX_WEBUI_DATA_DIR=./var/data
 SING_BOX_WEBUI_RUNTIME_DIR=./var/run
 SING_BOX_WEBUI_LOG_LEVEL=debug
 SING_BOX_BIN=/absolute/path/to/sing-box
+SING_BOX_WEBUI_TUN_ADDRESS=100.64.0.1/30
 ```
 
 `SING_BOX_BIN` 是可选的开发覆盖项。未设置时使用托管核心；设置后程序必须规范化并
 验证该绝对路径，且禁用托管更新和回滚。测试不得从任意 PATH 条目隐式选择二进制。
+
+`SING_BOX_WEBUI_TUN_ADDRESS` 只接受 IPv4 `/30` 网段。它不能与 Fake IP 地址池、Docker
+网络或本机局域网重叠；配置生成时会拒绝已知的 Fake IP 重叠。默认值 `100.64.0.1/30`
+用于避开项目默认的 Fake IP 网段 `198.18.0.0/15`。
 
 环境变量不得承载长期认证秘密。测试秘密使用测试夹具或进程内注入，并确保不写日志。
 

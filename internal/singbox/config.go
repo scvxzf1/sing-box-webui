@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -35,6 +36,10 @@ const (
 	ModeTUN         ProxyMode = "tun"
 )
 
+// DefaultTUNAddress is the IPv4 CIDR assigned to the system TUN inbound. It is
+// configurable at startup so deployments can avoid local or container routes.
+var DefaultTUNAddress = "100.64.0.1/30"
+
 func BuildConfig(node subscription.Node, mode ProxyMode, mixedPort uint16) ([]byte, error) {
 	return BuildConfigWithRules(node, mode, mixedPort, nil)
 }
@@ -51,6 +56,9 @@ func BuildConfigWithController(node subscription.Node, mode ProxyMode, mixedPort
 	}
 	if (controller.Address == "") != (controller.Secret == "") {
 		return nil, fmt.Errorf("controller address and secret must be configured together")
+	}
+	if err := validateTUNProfile(mode, dns); err != nil {
+		return nil, err
 	}
 	outbound, err := buildOutbound(node, "proxy")
 	if err != nil {
@@ -133,6 +141,9 @@ func BuildPoolConfigWithDNS(nodes []subscription.Node, mode ProxyMode, mixedPort
 	if (options.ControllerAddress == "") != (options.ControllerSecret == "") {
 		return nil, fmt.Errorf("health controller address and secret must be configured together")
 	}
+	if err := validateTUNProfile(mode, dns); err != nil {
+		return nil, err
+	}
 
 	outbounds := make([]any, 0, len(nodes)+4)
 	tags := make([]string, 0, len(nodes))
@@ -140,7 +151,7 @@ func BuildPoolConfigWithDNS(nodes []subscription.Node, mode ProxyMode, mixedPort
 		tag := PoolMemberTag(index)
 		outbound, err := buildOutbound(node, tag)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("node %q: %w", node.Name, err)
 		}
 		outbounds = append(outbounds, outbound)
 		tags = append(tags, tag)
@@ -193,8 +204,35 @@ func buildInbound(mode ProxyMode, mixedPort uint16, allowLan bool) map[string]an
 	}
 	return map[string]any{
 		"type": "tun", "tag": "tun-in", "interface_name": "singtun0",
-		"address": []string{"198.18.0.1/30", "fdfe:dcba:9876::1/126"}, "auto_route": true, "strict_route": true, "stack": "system",
+		"address": []string{DefaultTUNAddress, "fdfe:dcba:9876::1/126"}, "auto_route": true, "strict_route": true, "stack": "system",
 	}
+}
+
+func validateTUNProfile(mode ProxyMode, profile dnsprofile.Profile) error {
+	return validateTUNProfileAddress(mode, profile, DefaultTUNAddress)
+}
+
+func validateTUNProfileAddress(mode ProxyMode, profile dnsprofile.Profile, address string) error {
+	if mode != ModeTUN {
+		return nil
+	}
+	tunPrefix, err := netip.ParsePrefix(address)
+	if err != nil || tunPrefix.Bits() != 30 || !tunPrefix.Addr().Is4() {
+		return fmt.Errorf("invalid TUN address %q: expected an IPv4 /30 CIDR", address)
+	}
+	if !profile.FakeIP.Enabled || profile.FakeIP.Inet4Range == "" {
+		return nil
+	}
+	fakePrefix, err := netip.ParsePrefix(profile.FakeIP.Inet4Range)
+	if err != nil || !fakePrefix.Addr().Is4() {
+		return fmt.Errorf("invalid Fake IP IPv4 range %q", profile.FakeIP.Inet4Range)
+	}
+	tunPrefix = tunPrefix.Masked()
+	fakePrefix = fakePrefix.Masked()
+	if tunPrefix.Contains(fakePrefix.Addr()) || fakePrefix.Contains(tunPrefix.Addr()) {
+		return fmt.Errorf("TUN address %q overlaps Fake IP range %q", address, profile.FakeIP.Inet4Range)
+	}
+	return nil
 }
 
 // lanInbound returns an extra mixed inbound bound to 0.0.0.0 so LAN devices can
@@ -314,6 +352,9 @@ func isIPLiteral(value string) bool {
 }
 
 func buildOutbound(node subscription.Node, tag string) (map[string]any, error) {
+	if err := subscription.ValidateNode(node); err != nil {
+		return nil, err
+	}
 	outbound := map[string]any{
 		"type":        node.Type,
 		"tag":         tag,
