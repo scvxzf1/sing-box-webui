@@ -33,7 +33,8 @@ type FetchClient interface {
 }
 
 type HTTPFetcher struct {
-	client *http.Client
+	client          *http.Client
+	publicHostCheck bool
 }
 
 func NewFetcher() *HTTPFetcher {
@@ -78,8 +79,8 @@ func NewFetcher() *HTTPFetcher {
 
 // NewProxyFetcher builds a fetcher whose requests are routed through the local
 // proxy mixed inbound at proxyAddress (host:port). The subscription host is
-// resolved and connected by the proxy itself, so unlike the direct fetcher no
-// local DNS/public-address checks are applied to the dial.
+// resolved and connected by the proxy itself. The fetcher preflights every
+// target and redirect through the controlled public-address resolver.
 func NewProxyFetcher(proxyAddress string) (*HTTPFetcher, error) {
 	host, port, err := net.SplitHostPort(strings.TrimSpace(proxyAddress))
 	if err != nil || host == "" || port == "" {
@@ -108,9 +109,12 @@ func NewProxyFetcher(proxyAddress string) (*HTTPFetcher, error) {
 			if len(via) >= 5 {
 				return fmt.Errorf("too many redirects")
 			}
-			return validateSubscriptionURL(request.URL)
+			if err := validateSubscriptionURL(request.URL); err != nil {
+				return err
+			}
+			return validatePublicHost(request.Context(), request.URL.Hostname())
 		},
-	}}, nil
+	}, publicHostCheck: true}, nil
 }
 
 func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL, etag, lastModified string) ([]byte, FetchMetadata, error) {
@@ -133,6 +137,11 @@ func (f *HTTPFetcher) fetch(ctx context.Context, rawURL, etag, lastModified, pat
 	}
 	if err := validateSubscriptionURL(parsed); err != nil {
 		return nil, FetchMetadata{}, err
+	}
+	if f.publicHostCheck {
+		if err := validatePublicHost(ctx, parsed.Hostname()); err != nil {
+			return nil, FetchMetadata{}, err
+		}
 	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
@@ -179,6 +188,22 @@ func (f *HTTPFetcher) fetch(ctx context.Context, rawURL, etag, lastModified, pat
 	}
 	metadata.Path = path
 	return content, metadata, nil
+}
+
+func validatePublicHost(ctx context.Context, host string) error {
+	addresses, err := netresolve.PublicAddresses(ctx, host)
+	if err != nil {
+		return fmt.Errorf("resolve subscription host: %w", err)
+	}
+	if len(addresses) == 0 {
+		return fmt.Errorf("subscription host has no addresses")
+	}
+	for _, address := range addresses {
+		if !netsafety.AllowedPublicAddress(address) {
+			return fmt.Errorf("subscription host resolved to a blocked address")
+		}
+	}
+	return nil
 }
 
 func validateSubscriptionURL(parsed *url.URL) error {
