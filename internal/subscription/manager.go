@@ -192,6 +192,15 @@ func (m *Manager) Create(ctx context.Context, input CreateInput) (View, error) {
 	m.mu.Unlock()
 
 	if err := m.Refresh(ctx, item.ID); err != nil {
+		m.mu.Lock()
+		if index := m.indexOf(item.ID); index >= 0 && len(m.items[index].Nodes) == 0 {
+			previousItems := append([]Subscription(nil), m.items...)
+			m.items = append(m.items[:index], m.items[index+1:]...)
+			if rollbackErr := m.persistLocked(); rollbackErr != nil {
+				m.items = previousItems
+			}
+		}
+		m.mu.Unlock()
 		return View{}, err
 	}
 	return m.Get(item.ID)

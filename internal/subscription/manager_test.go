@@ -101,6 +101,21 @@ func TestCreateRejectsNonHTTPSubscriptionURL(t *testing.T) {
 	}
 }
 
+func TestCreateRollsBackWhenInitialRefreshFails(t *testing.T) {
+	t.Parallel()
+	manager := &Manager{
+		path:    filepath.Join(t.TempDir(), "subscriptions.json"),
+		items:   []Subscription{},
+		fetcher: fakeFetcher{err: errors.New("upstream unavailable")},
+	}
+	if _, err := manager.Create(context.Background(), CreateInput{Name: "Broken", URL: "https://subscription.example.com", UpdateIntervalMinutes: 60}); err == nil {
+		t.Fatal("Create() succeeded despite initial refresh failure")
+	}
+	if listed := manager.List(); len(listed) != 0 {
+		t.Fatalf("failed create left subscriptions: %+v", listed)
+	}
+}
+
 func TestRefreshRetainsSubscriptionWhenRuleSyncFails(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
