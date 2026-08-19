@@ -253,6 +253,9 @@ func (s *Service) Apply(ctx context.Context, input ApplyInput) (Runtime, error) 
 	if s.health != nil {
 		s.health.Stop()
 	}
+	if s.connmon != nil {
+		s.connmon.Stop()
+	}
 
 	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	if s.supervisor.Snapshot().State == supervisor.StateRunning {
@@ -263,10 +266,15 @@ func (s *Service) Apply(ctx context.Context, input ApplyInput) (Runtime, error) 
 		return s.recordFailure(ctx, err), err
 	}
 	if input.Mode != singbox.ModeSystemProxy {
-		_ = s.systemProxy.Restore(ctx)
+		if s.systemProxy != nil {
+			if err := s.systemProxy.Restore(ctx); err != nil {
+				return s.recordFailure(ctx, err), err
+			}
+		}
 	}
-	if _, err := s.supervisor.Start(ctx, s.configStore.Path()); err != nil {
-		return s.recordFailure(ctx, err), err
+	started, startErr := s.supervisor.Start(ctx, s.configStore.Path())
+	if startErr != nil {
+		return s.recordFailure(ctx, startErr), startErr
 	}
 	if input.Mode == singbox.ModeSystemProxy {
 		proxyHost := "127.0.0.1"
@@ -299,6 +307,7 @@ func (s *Service) Apply(ctx context.Context, input ApplyInput) (Runtime, error) 
 		PoolID: target.PoolID, PoolName: target.PoolName, AllowLan: input.AllowLan, StartedAt: time.Now().UTC(),
 	}
 	s.mu.Unlock()
+	go s.watchSupervisor(started.Generation)
 	s.publish("runtime.applied", map[string]string{"mode": string(input.Mode), "targetType": target.TargetType, "targetId": firstTargetID(target)})
 	return s.Status(ctx), nil
 }
@@ -327,24 +336,71 @@ func (s *Service) Stop(ctx context.Context) (Runtime, error) {
 	if s.connmon != nil {
 		s.connmon.Stop()
 	}
+	var restoreErr error
 	if s.systemProxy != nil {
-		if err := s.systemProxy.Restore(ctx); err != nil {
-			return s.recordFailure(ctx, err), err
-		}
+		restoreErr = s.systemProxy.Restore(ctx)
 	}
+	var stopErr error
 	if s.supervisor != nil {
 		stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		_, err := s.supervisor.Stop(stopCtx)
+		_, stopErr = s.supervisor.Stop(stopCtx)
 		cancel()
-		if err != nil {
-			return s.recordFailure(ctx, err), err
-		}
+	}
+	if err := errors.Join(restoreErr, stopErr); err != nil {
+		return s.recordFailure(ctx, err), err
 	}
 	s.mu.Lock()
 	s.runtime = Runtime{State: supervisor.StateStopped}
 	s.mu.Unlock()
 	s.publish("runtime.stopped", map[string]string{"state": "stopped"})
 	return s.Status(ctx), nil
+}
+
+func (s *Service) watchSupervisor(generation uint64) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for range ticker.C {
+		snapshot := s.supervisor.Snapshot()
+		if snapshot.Generation != generation {
+			return
+		}
+		if snapshot.State == supervisor.StateRunning || snapshot.State == supervisor.StateStarting {
+			continue
+		}
+		s.operationMu.Lock()
+		snapshot = s.supervisor.Snapshot()
+		s.mu.RLock()
+		alreadyStopped := s.runtime.State == supervisor.StateStopped
+		s.mu.RUnlock()
+		if snapshot.Generation != generation || alreadyStopped {
+			s.operationMu.Unlock()
+			return
+		}
+		if s.health != nil {
+			s.health.Stop()
+		}
+		if s.connmon != nil {
+			s.connmon.Stop()
+		}
+		lastError := snapshot.LastError
+		if lastError == "" {
+			lastError = "sing-box stopped unexpectedly"
+		}
+		if s.systemProxy != nil {
+			restoreCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := s.systemProxy.Restore(restoreCtx); err != nil {
+				lastError = errors.Join(errors.New(lastError), fmt.Errorf("restore system proxy: %w", err)).Error()
+			}
+			cancel()
+		}
+		s.mu.Lock()
+		s.runtime.State = supervisor.StateFailed
+		s.runtime.LastError = lastError
+		s.mu.Unlock()
+		s.publish("runtime.failed", map[string]string{"state": "failed"})
+		s.operationMu.Unlock()
+		return
+	}
 }
 
 // Links returns the live connection monitor so the API layer can query it.
@@ -361,6 +417,9 @@ func (s *Service) ProxyAddress() string {
 	running := s.runtime.State == supervisor.StateRunning
 	mode := s.runtime.Mode
 	s.mu.RUnlock()
+	if s.supervisor != nil && s.supervisor.Snapshot().State != supervisor.StateRunning {
+		running = false
+	}
 	if !running || mode != singbox.ModeSystemProxy || s.mixedPort == 0 {
 		return ""
 	}
@@ -372,8 +431,9 @@ func (s *Service) ProxyAddress() string {
 // diagnostic request system-wide.
 func (s *Service) ProxyRunning() bool {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.runtime.State == supervisor.StateRunning
+	running := s.runtime.State == supervisor.StateRunning
+	s.mu.RUnlock()
+	return running && (s.supervisor == nil || s.supervisor.Snapshot().State == supervisor.StateRunning)
 }
 
 // poolChainResolver resolves an expanded connection chain to the pool member
