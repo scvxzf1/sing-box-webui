@@ -22,7 +22,7 @@ func (s *Server) coreStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	info, err := s.core.Info(r.Context())
 	if err != nil {
-		writeError(w, r, http.StatusServiceUnavailable, "core_unavailable", err.Error())
+		s.writeInternalError(w, r, http.StatusServiceUnavailable, "core_unavailable", "Core information is unavailable", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, info)
@@ -48,7 +48,7 @@ func (s *Server) updateCore(w http.ResponseWriter, r *http.Request) {
 	}
 	info, err := s.core.Update(r.Context(), input.Version)
 	if err != nil {
-		writeCoreOperationError(w, r, "core_update_failed", err)
+		s.writeCoreOperationError(w, r, "core_update_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, info)
@@ -69,7 +69,7 @@ func (s *Server) rollbackCore(w http.ResponseWriter, r *http.Request) {
 	}
 	info, err := s.core.Rollback(r.Context())
 	if err != nil {
-		writeCoreOperationError(w, r, "core_rollback_failed", err)
+		s.writeCoreOperationError(w, r, "core_rollback_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, info)
@@ -83,10 +83,11 @@ func (s *Server) coreChangeBlocked(r *http.Request) bool {
 	return state != "stopped" && state != "failed"
 }
 
-func writeCoreOperationError(w http.ResponseWriter, r *http.Request, code string, err error) {
+func (s *Server) writeCoreOperationError(w http.ResponseWriter, r *http.Request, code string, err error) {
 	status := http.StatusUnprocessableEntity
 	if errors.Is(err, core.ErrUpdateUnsupported) {
-		status = http.StatusConflict
+		writeError(w, r, http.StatusConflict, code, "Core update is not supported in this environment")
+		return
 	}
-	writeError(w, r, status, code, err.Error())
+	s.writeInternalError(w, r, status, code, "Core operation failed", err)
 }

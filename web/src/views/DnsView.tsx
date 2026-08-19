@@ -72,8 +72,8 @@ export function DnsView() {
           </div>
         )}
       />
-      {(profileQuery.error || saveMutation.error) && <InlineError error={profileQuery.error ?? saveMutation.error} />}
-      {tunUnavailable && (
+      {(profileQuery.error || runtimeQuery.error || saveMutation.error) && <InlineError error={profileQuery.error ?? runtimeQuery.error ?? saveMutation.error} />}
+      {runtimeQuery.data && tunUnavailable && (
         <div className="dns-notice" role="note">
           DNS 配置仅在 TUN 代理模式下生效{runtimeQuery.data?.capabilities.tun.detail ? `：${runtimeQuery.data.capabilities.tun.detail}` : '。'}
         </div>

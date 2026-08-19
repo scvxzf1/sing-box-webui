@@ -222,7 +222,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 			}
 			singBoxStatus = componentStatus{State: "healthy", Detail: detail}
 		} else if runtime.State == "failed" {
-			singBoxStatus = componentStatus{State: "failed", Detail: runtime.LastError}
+			singBoxStatus = componentStatus{State: "failed", Detail: "The managed process failed; see server logs for details"}
 		}
 	}
 	writeJSON(w, http.StatusOK, statusResponse{

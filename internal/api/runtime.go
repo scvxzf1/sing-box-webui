@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"net/http"
+	"time"
 
 	"sing-box-webui/internal/control"
 )
@@ -15,7 +17,11 @@ func (s *Server) runtimeStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusServiceUnavailable, "runtime_unavailable", "Runtime control is unavailable")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.control.Status(r.Context()))
+	runtime := s.control.Status(r.Context())
+	if runtime.LastError != "" {
+		runtime.LastError = "The managed process reported an error; see server logs for details"
+	}
+	writeJSON(w, http.StatusOK, runtime)
 }
 
 func (s *Server) applyRuntime(w http.ResponseWriter, r *http.Request) {
@@ -32,9 +38,11 @@ func (s *Server) applyRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "request_invalid", err.Error())
 		return
 	}
-	runtime, err := s.control.Apply(r.Context(), input)
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
+	runtime, err := s.control.Apply(ctx, input)
 	if err != nil {
-		writeError(w, r, http.StatusUnprocessableEntity, "apply_failed", err.Error())
+		s.writeInternalError(w, r, http.StatusUnprocessableEntity, "apply_failed", "Proxy configuration could not be applied", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, runtime)
@@ -49,9 +57,11 @@ func (s *Server) stopRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusServiceUnavailable, "runtime_unavailable", "Runtime control is unavailable")
 		return
 	}
-	runtime, err := s.control.Stop(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	runtime, err := s.control.Stop(ctx)
 	if err != nil {
-		writeError(w, r, http.StatusUnprocessableEntity, "stop_failed", err.Error())
+		s.writeInternalError(w, r, http.StatusUnprocessableEntity, "stop_failed", "Proxy could not be stopped", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, runtime)

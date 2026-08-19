@@ -47,7 +47,7 @@ type RuleSink interface {
 type Manager struct {
 	mu           sync.RWMutex
 	refreshMu    sync.Mutex
-	refreshLocks map[string]*sync.Mutex
+	refreshLocks map[string]*refreshLockEntry
 	path         string
 	items        []Subscription
 	fetcher      FetchClient
@@ -58,6 +58,11 @@ type Manager struct {
 	proxyResolver func() string
 	proxyFetcher  FetchClient
 	proxyAddress  string
+}
+
+type refreshLockEntry struct {
+	mu   sync.Mutex
+	refs int
 }
 
 func (m *Manager) SetRuleSink(sink RuleSink) {
@@ -192,15 +197,10 @@ func (m *Manager) Create(ctx context.Context, input CreateInput) (View, error) {
 	m.mu.Unlock()
 
 	if err := m.Refresh(ctx, item.ID); err != nil {
-		m.mu.Lock()
-		if index := m.indexOf(item.ID); index >= 0 && len(m.items[index].Nodes) == 0 {
-			previousItems := append([]Subscription(nil), m.items...)
-			m.items = append(m.items[:index], m.items[index+1:]...)
-			if rollbackErr := m.persistLocked(); rollbackErr != nil {
-				m.items = previousItems
-			}
+		rollbackErr := m.Delete(item.ID)
+		if rollbackErr != nil && !errors.Is(rollbackErr, ErrNotFound) {
+			return View{}, errors.Join(err, fmt.Errorf("rollback failed: %w", rollbackErr))
 		}
-		m.mu.Unlock()
 		return View{}, err
 	}
 	return m.Get(item.ID)
@@ -238,6 +238,11 @@ func (m *Manager) Update(id string, input UpdateInput) (View, error) {
 }
 
 func (m *Manager) Delete(id string) error {
+	release, err := m.acquireRefreshLock(id)
+	if err != nil {
+		return err
+	}
+	defer release()
 	m.mu.Lock()
 	index := m.indexOf(id)
 	if index < 0 {
@@ -370,20 +375,12 @@ func (m *Manager) Refresh(ctx context.Context, id string) error {
 }
 
 func (m *Manager) refresh(ctx context.Context, id string, conditional bool) error {
-	// Serialize refreshes so a slower request cannot overwrite a newer parse or
-	// publish a stale failure after a successful refresh.
-	m.refreshMu.Lock()
-	if m.refreshLocks == nil {
-		m.refreshLocks = make(map[string]*sync.Mutex)
+	// Serialize refreshes and deletion, and reclaim idle per-ID entries.
+	release, err := m.acquireRefreshLock(id)
+	if err != nil {
+		return err
 	}
-	refreshLock := m.refreshLocks[id]
-	if refreshLock == nil {
-		refreshLock = &sync.Mutex{}
-		m.refreshLocks[id] = refreshLock
-	}
-	m.refreshMu.Unlock()
-	refreshLock.Lock()
-	defer refreshLock.Unlock()
+	defer release()
 
 	m.mu.RLock()
 	index := m.indexOf(id)
@@ -466,6 +463,36 @@ func (m *Manager) refresh(ctx context.Context, id string, conditional bool) erro
 	}
 	m.publish("subscription.updated", map[string]any{"subscriptionId": id, "nodeCount": nodeCount, "path": metadata.Path})
 	return nil
+}
+
+func (m *Manager) acquireRefreshLock(id string) (func(), error) {
+	m.mu.RLock()
+	exists := m.indexOf(id) >= 0
+	m.mu.RUnlock()
+	if !exists {
+		return nil, ErrNotFound
+	}
+	m.refreshMu.Lock()
+	if m.refreshLocks == nil {
+		m.refreshLocks = make(map[string]*refreshLockEntry)
+	}
+	entry := m.refreshLocks[id]
+	if entry == nil {
+		entry = &refreshLockEntry{}
+		m.refreshLocks[id] = entry
+	}
+	entry.refs++
+	m.refreshMu.Unlock()
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		m.refreshMu.Lock()
+		entry.refs--
+		if entry.refs == 0 && m.refreshLocks[id] == entry {
+			delete(m.refreshLocks, id)
+		}
+		m.refreshMu.Unlock()
+	}, nil
 }
 
 func (m *Manager) RunAutoUpdate(ctx context.Context) {

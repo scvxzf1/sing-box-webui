@@ -29,6 +29,7 @@ export function NodesView() {
   const [addTargets, setAddTargets] = useState<Node[]>([])
   const selectAllRef = useRef<HTMLInputElement>(null)
   const currentSubscriptionRef = useRef(subscriptionId)
+  const subscriptionGenerationRef = useRef(0)
   currentSubscriptionRef.current = subscriptionId
   const subscriptionsQuery = useQuery({
     queryKey: ['subscriptions'],
@@ -65,6 +66,7 @@ export function NodesView() {
   }, [pageSize])
 
   useEffect(() => {
+    subscriptionGenerationRef.current += 1
     setLatencyResults({})
     setTestingIDs(new Set())
     setLatencyError(null)
@@ -87,19 +89,23 @@ export function NodesView() {
   })
   const testNodes = async (nodeIds: string[]) => {
     const requestSubscription = subscriptionId
+    const requestGeneration = subscriptionGenerationRef.current
     setTestingIDs((current) => new Set([...current, ...nodeIds]))
     setLatencyError(null)
     try {
       const response = await testNodeLatency(requestSubscription, { nodeIds })
-      if (currentSubscriptionRef.current !== requestSubscription) return
+      if (currentSubscriptionRef.current !== requestSubscription || subscriptionGenerationRef.current !== requestGeneration) return
       setLatencyResults((current) => {
         const next = { ...current }
         for (const result of response.items) next[result.nodeId] = result
         return next
       })
     } catch (error) {
-      setLatencyError(error)
+      if (currentSubscriptionRef.current === requestSubscription && subscriptionGenerationRef.current === requestGeneration) {
+        setLatencyError(error)
+      }
     } finally {
+      if (currentSubscriptionRef.current !== requestSubscription || subscriptionGenerationRef.current !== requestGeneration) return
       setTestingIDs((current) => {
         const next = new Set(current)
         for (const nodeID of nodeIds) next.delete(nodeID)

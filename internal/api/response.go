@@ -32,3 +32,11 @@ func writeError(w http.ResponseWriter, r *http.Request, status int, code, messag
 		RequestID: requestID,
 	})
 }
+
+func (s *Server) writeInternalError(w http.ResponseWriter, r *http.Request, status int, code, message string, err error) {
+	requestID, _ := r.Context().Value(requestIDKey{}).(string)
+	if s.logger != nil {
+		s.logger.Error("API operation failed", "request_id", requestID, "code", code, "error", err)
+	}
+	writeError(w, r, status, code, message)
+}

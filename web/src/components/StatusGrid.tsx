@@ -50,9 +50,9 @@ export function StatusGrid({ status, eventStream }: StatusGridProps) {
     {
       key: 'events',
       label: '事件通道',
-      value: eventStream === 'connected' ? '已连接' : '等待连接',
+      value: eventStream === 'connected' ? '已连接' : eventStream === 'error' ? '已中断' : '等待连接',
       detail: 'Server-Sent Events',
-      tone: eventStream === 'connected' ? 'ok' : 'idle',
+      tone: eventStream === 'connected' ? 'ok' : eventStream === 'error' ? 'error' : 'idle',
       icon: Radio,
     },
   ]

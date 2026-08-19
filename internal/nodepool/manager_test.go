@@ -80,6 +80,17 @@ func TestValidatePoolRejectsUnsafeHealthPolicy(t *testing.T) {
 	if _, err := validatePool(invalidTiming); err == nil {
 		t.Fatal("validatePool() accepted probe interval greater than idle timeout")
 	}
+	for _, rawURL := range []string{
+		"https://100.64.0.1/generate_204",
+		"https://198.18.0.1/generate_204",
+		"https://192.0.2.1/generate_204",
+	} {
+		invalidAddress := base
+		invalidAddress.ProbeURL = rawURL
+		if _, err := validatePool(invalidAddress); err == nil {
+			t.Fatalf("validatePool() accepted non-public probe URL %q", rawURL)
+		}
+	}
 }
 
 func TestResolveRejectsPoolWithFewerThanTwoAvailableMembers(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,33 @@ type fakeFetcher struct {
 	content []byte
 	err     error
 }
+
+type blockingRuleSink struct {
+	syncStarted chan struct{}
+	releaseSync chan struct{}
+	deleted     chan struct{}
+	mu          sync.Mutex
+	rulesExist  bool
+}
+
+func (s *blockingRuleSink) SyncSubscriptionRules(string, string, []ImportedRule) error {
+	close(s.syncStarted)
+	<-s.releaseSync
+	s.mu.Lock()
+	s.rulesExist = true
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *blockingRuleSink) DeleteSubscriptionRules(string) error {
+	s.mu.Lock()
+	s.rulesExist = false
+	s.mu.Unlock()
+	close(s.deleted)
+	return nil
+}
+
+func (s *blockingRuleSink) ReloadRules() error { return nil }
 
 func (f fakeFetcher) Fetch(context.Context, string, string, string) ([]byte, FetchMetadata, error) {
 	return f.content, FetchMetadata{ETag: `"test"`}, f.err
@@ -113,6 +141,85 @@ func TestCreateRollsBackWhenInitialRefreshFails(t *testing.T) {
 	}
 	if listed := manager.List(); len(listed) != 0 {
 		t.Fatalf("failed create left subscriptions: %+v", listed)
+	}
+}
+
+func TestCreateRollsBackWhenInitialRuleSyncFails(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	manager := &Manager{
+		path: filepath.Join(directory, "subscriptions.json"), items: []Subscription{},
+		fetcher:  fakeFetcher{content: []byte("trojan://secret@proxy.example.com:443?security=tls#Primary")},
+		ruleSink: &fakeRuleSink{syncErr: errors.New("rule store unavailable")},
+	}
+	if _, err := manager.Create(context.Background(), CreateInput{Name: "Broken", URL: "https://subscription.example.com", UpdateIntervalMinutes: 60}); err == nil {
+		t.Fatal("Create() succeeded despite initial rule sync failure")
+	}
+	if listed := manager.List(); len(listed) != 0 {
+		t.Fatalf("failed create left subscriptions: %+v", listed)
+	}
+	reloaded := &Manager{path: manager.path}
+	if err := reloaded.load(); err != nil {
+		t.Fatal(err)
+	}
+	if listed := reloaded.List(); len(listed) != 0 {
+		t.Fatalf("failed create remained on disk: %+v", listed)
+	}
+}
+
+func TestDeleteWaitsForRefreshRuleSync(t *testing.T) {
+	t.Parallel()
+	sink := &blockingRuleSink{
+		syncStarted: make(chan struct{}), releaseSync: make(chan struct{}), deleted: make(chan struct{}),
+	}
+	manager := &Manager{
+		path:     filepath.Join(t.TempDir(), "subscriptions.json"),
+		items:    []Subscription{{ID: "sub-1", Name: "Main", URL: "https://subscription.example.com"}},
+		fetcher:  fakeFetcher{content: []byte("trojan://secret@proxy.example.com:443?security=tls#Primary")},
+		ruleSink: sink,
+	}
+	if err := manager.persistLocked(); err != nil {
+		t.Fatal(err)
+	}
+	refreshDone := make(chan error, 1)
+	go func() { refreshDone <- manager.Refresh(context.Background(), "sub-1") }()
+	<-sink.syncStarted
+	deleteDone := make(chan error, 1)
+	go func() { deleteDone <- manager.Delete("sub-1") }()
+	select {
+	case <-sink.deleted:
+		t.Fatal("Delete() removed rules before the refresh rule sync completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(sink.releaseSync)
+	if err := <-refreshDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-deleteDone; err != nil {
+		t.Fatal(err)
+	}
+	sink.mu.Lock()
+	rulesExist := sink.rulesExist
+	sink.mu.Unlock()
+	if rulesExist {
+		t.Fatal("deleted subscription rules were resurrected")
+	}
+}
+
+func TestRefreshLocksAreReclaimed(t *testing.T) {
+	t.Parallel()
+	manager := &Manager{
+		path:    filepath.Join(t.TempDir(), "subscriptions.json"),
+		items:   []Subscription{{ID: "sub-1", Name: "Main", URL: "https://subscription.example.com"}},
+		fetcher: fakeFetcher{err: errors.New("upstream unavailable")},
+	}
+	_ = manager.Refresh(context.Background(), "sub-1")
+	_ = manager.Refresh(context.Background(), "missing")
+	manager.refreshMu.Lock()
+	count := len(manager.refreshLocks)
+	manager.refreshMu.Unlock()
+	if count != 0 {
+		t.Fatalf("refresh lock registry contains %d idle entries", count)
 	}
 }
 

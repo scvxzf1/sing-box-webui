@@ -22,6 +22,7 @@ const (
 	StatusOutage      = "outage"
 	maxConcurrent     = 4
 	probeTimeout      = 6 * time.Second
+	probeRoundTimeout = 30 * time.Second
 	fastRetry         = time.Second
 	initialBackoff    = 15 * time.Second
 )
@@ -290,6 +291,8 @@ func (m *Manager) checkTargets(ctx context.Context, targets []Target) {
 	m.mu.RLock()
 	client, probeURLs := m.client, append([]string(nil), m.config.ProbeURLs...)
 	m.mu.RUnlock()
+	roundCtx, cancel := context.WithTimeout(ctx, probeRoundTimeout)
+	defer cancel()
 
 	results := make(chan probeResult, len(targets))
 	semaphore := make(chan struct{}, maxConcurrent)
@@ -302,10 +305,14 @@ func (m *Manager) checkTargets(ctx context.Context, targets []Target) {
 			select {
 			case semaphore <- struct{}{}:
 				defer func() { <-semaphore }()
-			case <-ctx.Done():
+			case <-roundCtx.Done():
 				return
 			}
-			results <- probeTarget(ctx, client, target.Tag, probeURLs)
+			result := probeTarget(roundCtx, client, target.Tag, probeURLs)
+			select {
+			case results <- result:
+			case <-roundCtx.Done():
+			}
 		}()
 	}
 	wait.Wait()
@@ -325,7 +332,7 @@ func (m *Manager) checkTargets(ctx context.Context, targets []Target) {
 	m.mu.Unlock()
 
 	if selection != "" {
-		if err := client.selectOutbound(ctx, selection); err != nil {
+		if err := client.selectOutbound(roundCtx, selection); err != nil {
 			m.setError(err)
 			return
 		}

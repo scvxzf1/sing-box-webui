@@ -1,12 +1,13 @@
 package nodepool
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"sing-box-webui/internal/netresolve"
+	"sing-box-webui/internal/netsafety"
 	"sing-box-webui/internal/subscription"
 )
 
@@ -341,6 +344,34 @@ func (m *Manager) ResolveWithMembers(id string) (Pool, []Member, []subscription.
 	return pool, resolvedMembers, nodes, nil
 }
 
+// ValidateProbeURLs resolves each probe host through the controlled resolver
+// and rejects any result outside the public address space before a core apply.
+// The core still owns the final connection, so this is a validation guard
+// against stale or obviously unsafe DNS answers rather than an address pin.
+func (m *Manager) ValidateProbeURLs(ctx context.Context, id string) error {
+	pool, err := m.get(id)
+	if err != nil {
+		return err
+	}
+	urls := append([]string{pool.ProbeURL}, pool.FallbackProbeURLs...)
+	for _, raw := range urls {
+		parsed, parseErr := url.ParseRequestURI(raw)
+		if parseErr != nil || parsed.Hostname() == "" {
+			return fmt.Errorf("probe URL must be a valid HTTPS URL")
+		}
+		addresses, resolveErr := netresolve.PublicAddresses(ctx, parsed.Hostname())
+		if resolveErr != nil {
+			return fmt.Errorf("resolve probe URL host: %w", resolveErr)
+		}
+		for _, address := range addresses {
+			if !netsafety.AllowedPublicAddress(address) {
+				return fmt.Errorf("probe URL host resolves to a non-public address")
+			}
+		}
+	}
+	return nil
+}
+
 func (m *Manager) get(id string) (Pool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -535,8 +566,8 @@ func validatePool(pool Pool) (Pool, error) {
 }
 
 func blockedProbeHost(host string) bool {
-	ip := net.ParseIP(strings.Trim(host, "[]"))
-	return ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast())
+	address, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	return err == nil && !netsafety.AllowedPublicAddress(address)
 }
 
 func normalizePoolDefaults(pool *Pool) {

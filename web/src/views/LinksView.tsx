@@ -86,6 +86,7 @@ export function LinksView() {
 
   const snapshot = linksQuery.data
   const links = snapshot?.links ?? []
+  const hasSnapshot = snapshot !== undefined
 
   return (
     <>
@@ -107,17 +108,17 @@ export function LinksView() {
       {(linksQuery.error || clearMutation.error) && <InlineError error={linksQuery.error ?? clearMutation.error} />}
 
       <section className="traffic-status-band" aria-label="链接统计">
-        <div className={`traffic-state traffic-state--${snapshot?.running ? 'active' : 'idle'}`}>
+        <div className={`traffic-state traffic-state--${!hasSnapshot ? 'unknown' : snapshot.running ? 'active' : 'idle'}`}>
           <span className="status-dot" />
           <div>
             <span>监控状态</span>
-            <strong>{snapshot?.running ? '运行中' : '未运行'}</strong>
+            <strong>{!hasSnapshot ? '状态未知' : snapshot.running ? '运行中' : '未运行'}</strong>
           </div>
         </div>
-        <Metric icon={Activity} label="活跃连接" value={`${snapshot?.stats.active ?? 0}`} />
-        <Metric icon={Download} label="总下载速率" value={formatRate(snapshot?.stats.downloadRate ?? 0)} />
-        <Metric icon={Upload} label="总上传速率" value={formatRate(snapshot?.stats.uploadRate ?? 0)} />
-        <Metric icon={Waypoints} label="缓存链接" value={`${snapshot?.stats.total ?? 0} / ${snapshot?.stats.trackedCapacity ?? MAX_CACHE}`} />
+        <Metric icon={Activity} label="活跃连接" value={hasSnapshot ? `${snapshot.stats.active}` : '—'} />
+        <Metric icon={Download} label="总下载速率" value={hasSnapshot ? formatRate(snapshot.stats.downloadRate) : '—'} />
+        <Metric icon={Upload} label="总上传速率" value={hasSnapshot ? formatRate(snapshot.stats.uploadRate) : '—'} />
+        <Metric icon={Waypoints} label="缓存链接" value={hasSnapshot ? `${snapshot.stats.total} / ${snapshot.stats.trackedCapacity}` : '—'} />
       </section>
 
       <div className="links-toolbar">
@@ -149,7 +150,11 @@ export function LinksView() {
       </div>
 
       <div className="links-table-wrap panel">
-        {links.length === 0 ? (
+        {linksQuery.isPending && !hasSnapshot ? (
+          <div className="loading-state">正在读取连接状态</div>
+        ) : linksQuery.isError && !hasSnapshot ? (
+          <div className="empty-state">无法读取连接状态</div>
+        ) : links.length === 0 ? (
           <div className="empty-state">
             {snapshot?.running
               ? search || activeOnly

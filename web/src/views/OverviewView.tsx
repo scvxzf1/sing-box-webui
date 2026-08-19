@@ -3,6 +3,7 @@ import { Radio, Server } from 'lucide-react'
 import { getRuntime, getStatus, listSubscriptions } from '../api/client'
 import { PageHeading } from '../components/PageHeading'
 import { StatusGrid } from '../components/StatusGrid'
+import { InlineError } from '../components/InlineError'
 import type { EventStreamState } from '../hooks/useEventStream'
 
 export function OverviewView({ eventStream }: { eventStream: EventStreamState }) {
@@ -77,9 +78,10 @@ export function OverviewView({ eventStream }: { eventStream: EventStreamState })
           </div>
           <div>
             <dt>代理状态</dt>
-            <dd>{runtimeQuery.data?.state === 'running' ? '运行中' : '已停止'}</dd>
+            <dd>{runtimeQuery.isPending || runtimeQuery.isError || !runtimeQuery.data ? '状态未知' : runtimeQuery.data.state === 'running' ? '运行中' : runtimeQuery.data.state === 'stopped' ? '已停止' : '处理中'}</dd>
           </div>
         </dl>
+        {runtimeQuery.error && <InlineError error={runtimeQuery.error} />}
       </section>
     </>
   )

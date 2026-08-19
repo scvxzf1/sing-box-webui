@@ -152,6 +152,14 @@ describe('LinksView', () => {
     expect(table).not.toBeInTheDocument()
   })
 
+  it('does not report the proxy as stopped when the status is unavailable', async () => {
+    api.listLinks.mockRejectedValue(new Error('API unavailable'))
+    renderView()
+    expect(await screen.findByText('状态未知')).toBeInTheDocument()
+    expect(await screen.findByText('无法读取连接状态')).toBeInTheDocument()
+    expect(screen.queryByText('代理未运行。请先在「连接」页启动代理。')).not.toBeInTheDocument()
+  })
+
   it('marks closed connections', async () => {
     api.listLinks.mockResolvedValue(snapshot([link({ id: 'a', active: false, node: 'direct' })]))
     renderView()

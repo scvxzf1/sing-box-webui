@@ -59,6 +59,7 @@ export function PoolsView() {
   // Tracks which pool (or the create form) the editor fields currently mirror.
   // Background refetches must not clobber unsaved edits for the same pool.
   const syncedFormKeyRef = useRef('')
+  const activePoolKeyRef = useRef('')
 
   const poolsQuery = useQuery({ queryKey: ['pools'], queryFn: ({ signal }) => listNodePools(signal) })
   const [draggingId, setDraggingId] = useState<string | null>(null)
@@ -73,6 +74,7 @@ export function PoolsView() {
   }, [creating, poolsQuery.data, selectedPoolId])
 
   useEffect(() => {
+    activePoolKeyRef.current = creating ? '__create__' : selectedPoolId
     if (creating || !selectedPool) return
     if (syncedFormKeyRef.current === selectedPool.id) return
     syncedFormKeyRef.current = selectedPool.id
@@ -91,6 +93,7 @@ export function PoolsView() {
     setMemberSearch('')
     setLatencyResults({})
     setTestingKeys(new Set())
+    setTestingAll(false)
     setLatencyError(null)
   }, [creating, selectedPool])
 
@@ -104,6 +107,7 @@ export function PoolsView() {
 
   const resetForCreate = () => {
     syncedFormKeyRef.current = '__create__'
+    activePoolKeyRef.current = '__create__'
     setCreating(true)
     setSelectedPoolId('')
     setName('')
@@ -122,6 +126,7 @@ export function PoolsView() {
     setMemberSearch('')
     setLatencyResults({})
     setTestingKeys(new Set())
+    setTestingAll(false)
     setLatencyError(null)
   }
   const invalidate = async () => queryClient.invalidateQueries({ queryKey: ['pools'] })
@@ -145,6 +150,7 @@ export function PoolsView() {
     },
     onSuccess: async (pool) => {
       syncedFormKeyRef.current = ''
+      activePoolKeyRef.current = pool.id
       setCreating(false)
       setSelectedPoolId(pool.id)
       await invalidate()
@@ -153,6 +159,7 @@ export function PoolsView() {
   const deleteMutation = useMutation({
     mutationFn: deleteNodePool,
     onSuccess: async () => {
+      activePoolKeyRef.current = ''
       setSelectedPoolId('')
       await invalidate()
     },
@@ -188,6 +195,7 @@ export function PoolsView() {
   }, [selectedPoolId, creating])
 
   const testMembers = async (targets: PoolMember[]) => {
+    const requestPoolKey = activePoolKeyRef.current
     const targetKeys = targets.map((member) => memberKey(member.subscriptionId, member.nodeId))
     const grouped = new Map<string, string[]>()
     for (const member of targets.filter((item) => item.available)) {
@@ -207,14 +215,16 @@ export function PoolsView() {
           for (const result of response.items) results.push({ key: memberKey(subscriptionId, result.nodeId), result })
         }
       }
+      if (activePoolKeyRef.current !== requestPoolKey) return
       setLatencyResults((current) => {
         const next = { ...current }
         for (const item of results) next[item.key] = item.result
         return next
       })
     } catch (error) {
-      setLatencyError(error)
+      if (activePoolKeyRef.current === requestPoolKey) setLatencyError(error)
     } finally {
+      if (activePoolKeyRef.current !== requestPoolKey) return
       setTestingKeys((current) => {
         const next = new Set(current)
         for (const key of targetKeys) next.delete(key)
@@ -224,9 +234,10 @@ export function PoolsView() {
   }
 
   const testAllMembers = async () => {
+    const requestPoolKey = activePoolKeyRef.current
     setTestingAll(true)
     await testMembers(availableMembers)
-    setTestingAll(false)
+    if (activePoolKeyRef.current === requestPoolKey) setTestingAll(false)
   }
 
   const availableMembers = members.filter((member) => member.available)
@@ -307,7 +318,7 @@ export function PoolsView() {
               onDragOver={(event) => handleDragOver(event, pool.id)}
               onDrop={(event) => handleDrop(event, pool.id)}
               onDragEnd={() => { setDraggingId(null); setDropIndicator(null) }}
-              onClick={() => { setCreating(false); setSelectedPoolId(pool.id) }}
+              onClick={() => { activePoolKeyRef.current = pool.id; setCreating(false); setSelectedPoolId(pool.id) }}
             >
               <GripVertical className="drag-handle" size={16} aria-hidden="true" />
               <span><strong>{pool.name}</strong><small>{pool.availableCount}/{pool.memberCount} 可用</small></span>

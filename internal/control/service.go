@@ -173,6 +173,9 @@ func (s *Service) Apply(ctx context.Context, input ApplyInput) (Runtime, error) 
 		if s.pools == nil {
 			return s.Status(ctx), fmt.Errorf("node pool control is unavailable")
 		}
+		if validateErr := s.pools.ValidateProbeURLs(ctx, input.PoolID); validateErr != nil {
+			return s.Status(ctx), validateErr
+		}
 		pool, members, nodes, resolveErr := s.pools.ResolveWithMembers(input.PoolID)
 		if resolveErr != nil {
 			return s.Status(ctx), resolveErr
