@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"sing-box-webui/internal/connectivity"
 )
@@ -23,7 +25,7 @@ func (s *Server) connectivityCollection(w http.ResponseWriter, r *http.Request) 
 		}
 		target, err := s.connectivity.Create(input)
 		if err != nil {
-			writeConnectivityError(w, r, err)
+			s.writeConnectivityError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, target)
@@ -47,13 +49,13 @@ func (s *Server) connectivityItem(w http.ResponseWriter, r *http.Request) {
 		}
 		target, err := s.connectivity.Update(id, input)
 		if err != nil {
-			writeConnectivityError(w, r, err)
+			s.writeConnectivityError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, target)
 	case http.MethodDelete:
 		if err := s.connectivity.Delete(id); err != nil {
-			writeConnectivityError(w, r, err)
+			s.writeConnectivityError(w, r, err)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -73,9 +75,11 @@ func (s *Server) connectivityTest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "The request method is not allowed")
 		return
 	}
-	response, err := s.connectivity.Test(r.Context(), r.PathValue("id"))
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	response, err := s.connectivity.Test(ctx, r.PathValue("id"))
 	if err != nil {
-		writeConnectivityError(w, r, err)
+		s.writeConnectivityError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
@@ -95,26 +99,28 @@ func (s *Server) connectivityDiagnostic(w http.ResponseWriter, r *http.Request) 
 		writeError(w, r, http.StatusBadRequest, "request_invalid", err.Error())
 		return
 	}
-	result, err := s.connectivity.Diagnose(r.Context(), input)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	result, err := s.connectivity.Diagnose(ctx, input)
 	if err != nil {
-		writeConnectivityError(w, r, err)
+		s.writeConnectivityError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
 }
 
-func writeConnectivityError(w http.ResponseWriter, r *http.Request, err error) {
+func (s *Server) writeConnectivityError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, connectivity.ErrInvalidProvider) {
-		writeError(w, r, http.StatusBadRequest, "diagnostic_provider_invalid", err.Error())
+		writeError(w, r, http.StatusBadRequest, "diagnostic_provider_invalid", "Diagnostic provider is invalid")
 		return
 	}
 	if errors.Is(err, connectivity.ErrProxyStopped) {
-		writeError(w, r, http.StatusConflict, "proxy_not_running", err.Error())
+		writeError(w, r, http.StatusConflict, "proxy_not_running", "Proxy is not running")
 		return
 	}
 	if errors.Is(err, connectivity.ErrNotFound) {
 		writeError(w, r, http.StatusNotFound, "connectivity_target_not_found", "Connectivity target not found")
 		return
 	}
-	writeError(w, r, http.StatusUnprocessableEntity, "operation_failed", err.Error())
+	s.writeInternalError(w, r, http.StatusUnprocessableEntity, "operation_failed", "Connectivity operation failed", err)
 }

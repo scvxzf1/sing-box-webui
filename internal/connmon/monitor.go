@@ -99,20 +99,21 @@ type Query struct {
 
 // Monitor polls the Clash API and maintains the link cache.
 type Monitor struct {
-	mu        sync.RWMutex
-	client    *http.Client
-	address   string
-	secret    string
-	resolve   Resolver
-	running   bool
-	cancel    context.CancelFunc
-	done      chan struct{}
-	links     map[string]*Link
-	order     []string // oldest-first insertion order for eviction
-	closedN   int
-	stats     Stats
-	lastSeen  map[string]sample
-	selection map[string]string // selector/urltest group tag -> selected member tag
+	lifecycleMu sync.Mutex
+	mu          sync.RWMutex
+	client      *http.Client
+	address     string
+	secret      string
+	resolve     Resolver
+	running     bool
+	cancel      context.CancelFunc
+	done        chan struct{}
+	links       map[string]*Link
+	order       []string // oldest-first insertion order for eviction
+	closedN     int
+	stats       Stats
+	lastSeen    map[string]sample
+	selection   map[string]string // selector/urltest group tag -> selected member tag
 }
 
 type sample struct {
@@ -143,9 +144,11 @@ func (m *Monitor) Configure(address, secret string, resolver Resolver) {
 	}
 }
 
-// Start begins polling. Calling Start on a running monitor is a no-op.
+// Start begins polling, replacing any currently running poller.
 func (m *Monitor) Start(address, secret string, resolver Resolver) {
-	m.Stop()
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	m.stopLocked()
 	m.mu.Lock()
 	m.address, m.secret = address, secret
 	if resolver != nil {
@@ -169,6 +172,12 @@ func (m *Monitor) Start(address, secret string, resolver Resolver) {
 // Stop halts polling and waits for the loop to exit. The cache is retained so
 // the UI can still show the last known links after a stop.
 func (m *Monitor) Stop() {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	m.stopLocked()
+}
+
+func (m *Monitor) stopLocked() {
 	m.mu.Lock()
 	cancel, done := m.cancel, m.done
 	m.cancel, m.done, m.running = nil, nil, false

@@ -3,6 +3,8 @@ package subscription
 import (
 	"context"
 	"crypto/tls"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -33,8 +35,7 @@ type FetchClient interface {
 }
 
 type HTTPFetcher struct {
-	client          *http.Client
-	publicHostCheck bool
+	client *http.Client
 }
 
 func NewFetcher() *HTTPFetcher {
@@ -78,9 +79,9 @@ func NewFetcher() *HTTPFetcher {
 }
 
 // NewProxyFetcher builds a fetcher whose requests are routed through the local
-// proxy mixed inbound at proxyAddress (host:port). The subscription host is
-// resolved and connected by the proxy itself. The fetcher preflights every
-// target and redirect through the controlled public-address resolver.
+// mixed inbound at proxyAddress. Targets are resolved by the controlled DoH
+// resolver and passed to SOCKS5 as IP literals so the proxy cannot re-resolve
+// an attacker-controlled hostname to a private address.
 func NewProxyFetcher(proxyAddress string) (*HTTPFetcher, error) {
 	host, port, err := net.SplitHostPort(strings.TrimSpace(proxyAddress))
 	if err != nil || host == "" || port == "" {
@@ -89,12 +90,11 @@ func NewProxyFetcher(proxyAddress string) (*HTTPFetcher, error) {
 	if ip := net.ParseIP(strings.Trim(host, "[]")); ip == nil || !ip.IsLoopback() {
 		return nil, fmt.Errorf("proxy address must be a loopback address")
 	}
-	proxyURL, err := url.Parse("http://" + net.JoinHostPort(host, port))
-	if err != nil {
-		return nil, fmt.Errorf("parse proxy address: %w", err)
+	parsedPort, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || parsedPort == 0 {
+		return nil, fmt.Errorf("proxy address port is invalid")
 	}
 	transport := &http.Transport{
-		Proxy:                 http.ProxyURL(proxyURL),
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          16,
 		IdleConnTimeout:       30 * time.Second,
@@ -102,6 +102,7 @@ func NewProxyFetcher(proxyAddress string) (*HTTPFetcher, error) {
 		ResponseHeaderTimeout: 12 * time.Second,
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 	}
+	transport.DialContext = pinnedSOCKS5Dialer(net.JoinHostPort(host, strconv.FormatUint(parsedPort, 10)))
 	return &HTTPFetcher{client: &http.Client{
 		Transport: transport,
 		Timeout:   20 * time.Second,
@@ -112,9 +113,9 @@ func NewProxyFetcher(proxyAddress string) (*HTTPFetcher, error) {
 			if err := validateSubscriptionURL(request.URL); err != nil {
 				return err
 			}
-			return validatePublicHost(request.Context(), request.URL.Hostname())
+			return nil
 		},
-	}, publicHostCheck: true}, nil
+	}}, nil
 }
 
 func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL, etag, lastModified string) ([]byte, FetchMetadata, error) {
@@ -138,12 +139,6 @@ func (f *HTTPFetcher) fetch(ctx context.Context, rawURL, etag, lastModified, pat
 	if err := validateSubscriptionURL(parsed); err != nil {
 		return nil, FetchMetadata{}, err
 	}
-	if f.publicHostCheck {
-		if err := validatePublicHost(ctx, parsed.Hostname()); err != nil {
-			return nil, FetchMetadata{}, err
-		}
-	}
-
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
 		return nil, FetchMetadata{}, fmt.Errorf("create subscription request: %w", err)
@@ -190,18 +185,127 @@ func (f *HTTPFetcher) fetch(ctx context.Context, rawURL, etag, lastModified, pat
 	return content, metadata, nil
 }
 
-func validatePublicHost(ctx context.Context, host string) error {
-	addresses, err := netresolve.PublicAddresses(ctx, host)
-	if err != nil {
-		return fmt.Errorf("resolve subscription host: %w", err)
-	}
-	if len(addresses) == 0 {
-		return fmt.Errorf("subscription host has no addresses")
-	}
-	for _, address := range addresses {
-		if !netsafety.AllowedPublicAddress(address) {
-			return fmt.Errorf("subscription host resolved to a blocked address")
+func pinnedSOCKS5Dialer(proxyAddress string) func(context.Context, string, string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}
+	return func(ctx context.Context, _ string, target string) (net.Conn, error) {
+		host, portText, err := net.SplitHostPort(target)
+		if err != nil {
+			return nil, err
 		}
+		port, err := strconv.ParseUint(portText, 10, 16)
+		if err != nil || port == 0 {
+			return nil, fmt.Errorf("subscription target port is invalid")
+		}
+		addresses, err := netresolve.PublicAddresses(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("resolve subscription host: %w", err)
+		}
+		var dialErrors []error
+		for _, address := range addresses {
+			address = address.Unmap()
+			if !netsafety.AllowedPublicAddress(address) {
+				dialErrors = append(dialErrors, fmt.Errorf("blocked address %s", address))
+				continue
+			}
+			conn, err := dialSOCKS5(ctx, dialer, proxyAddress, netip.AddrPortFrom(address, uint16(port)))
+			if err == nil {
+				return conn, nil
+			}
+			dialErrors = append(dialErrors, err)
+		}
+		if len(dialErrors) == 0 {
+			return nil, fmt.Errorf("subscription host has no addresses")
+		}
+		return nil, fmt.Errorf("connect to subscription host through proxy: %w", errors.Join(dialErrors...))
+	}
+}
+
+func dialSOCKS5(ctx context.Context, dialer *net.Dialer, proxyAddress string, target netip.AddrPort) (net.Conn, error) {
+	conn, err := dialer.DialContext(ctx, "tcp", proxyAddress)
+	if err != nil {
+		return nil, err
+	}
+	completed := false
+	defer func() {
+		if !completed {
+			_ = conn.Close()
+		}
+	}()
+	deadline := time.Now().Add(8 * time.Second)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		return nil, err
+	}
+	stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopCancel()
+	if err := writeAll(conn, []byte{5, 1, 0}); err != nil {
+		return nil, err
+	}
+	var greeting [2]byte
+	if _, err := io.ReadFull(conn, greeting[:]); err != nil {
+		return nil, err
+	}
+	if greeting != [2]byte{5, 0} {
+		return nil, fmt.Errorf("SOCKS5 proxy rejected unauthenticated access")
+	}
+	request := []byte{5, 1, 0}
+	if target.Addr().Is4() {
+		request = append(request, 1)
+		value := target.Addr().As4()
+		request = append(request, value[:]...)
+	} else {
+		request = append(request, 4)
+		value := target.Addr().As16()
+		request = append(request, value[:]...)
+	}
+	request = binary.BigEndian.AppendUint16(request, target.Port())
+	if err := writeAll(conn, request); err != nil {
+		return nil, err
+	}
+	var reply [4]byte
+	if _, err := io.ReadFull(conn, reply[:]); err != nil {
+		return nil, err
+	}
+	if reply[0] != 5 || reply[1] != 0 || reply[2] != 0 {
+		return nil, fmt.Errorf("SOCKS5 proxy connection failed with status %d", reply[1])
+	}
+	addressBytes := 0
+	switch reply[3] {
+	case 1:
+		addressBytes = 4
+	case 4:
+		addressBytes = 16
+	case 3:
+		var length [1]byte
+		if _, err := io.ReadFull(conn, length[:]); err != nil {
+			return nil, err
+		}
+		addressBytes = int(length[0])
+	default:
+		return nil, fmt.Errorf("SOCKS5 proxy returned an invalid address type")
+	}
+	if _, err := io.CopyN(io.Discard, conn, int64(addressBytes+2)); err != nil {
+		return nil, err
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return nil, err
+	}
+	completed = true
+	return conn, nil
+}
+
+func writeAll(writer io.Writer, content []byte) error {
+	for len(content) > 0 {
+		written, err := writer.Write(content)
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+		content = content[written:]
 	}
 	return nil
 }

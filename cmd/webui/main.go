@@ -73,6 +73,18 @@ func main() {
 		os.Exit(1)
 	}
 	subscriptions.SetPoolSink(pools)
+	if err := pools.ReconcileReferences(); err != nil {
+		logger.Error("reconcile node pool references", "error", err)
+		os.Exit(1)
+	}
+	subscriptionIDs := make([]string, 0, len(subscriptions.List()))
+	for _, item := range subscriptions.List() {
+		subscriptionIDs = append(subscriptionIDs, item.ID)
+	}
+	if err := rules.ReconcileSubscriptionRules(subscriptionIDs); err != nil {
+		logger.Error("reconcile subscription rules", "error", err)
+		os.Exit(1)
+	}
 
 	bootstrapCtx, cancelBootstrap := context.WithTimeout(context.Background(), 30*time.Second)
 	coreManager, err := core.Open(bootstrapCtx, config.DataDir, config.SingBoxBinary)

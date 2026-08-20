@@ -59,22 +59,23 @@ type ApplyInput struct {
 }
 
 type Service struct {
-	mu            sync.RWMutex
-	operationMu   sync.Mutex
-	subscriptions *subscription.Manager
-	pools         *nodepool.Manager
-	rules         *routing.Manager
-	dns           *dnsprofile.Manager
-	client        *singbox.Client
-	configStore   *configstore.Store
-	supervisor    *supervisor.Manager
-	systemProxy   systemproxy.Controller
-	events        *events.Broker
-	tunEnabled    bool
-	mixedPort     uint16
-	runtime       Runtime
-	health        *poolhealth.Manager
-	connmon       *connmon.Monitor
+	mu                       sync.RWMutex
+	operationMu              sync.Mutex
+	subscriptions            *subscription.Manager
+	pools                    *nodepool.Manager
+	rules                    *routing.Manager
+	dns                      *dnsprofile.Manager
+	client                   *singbox.Client
+	configStore              *configstore.Store
+	supervisor               *supervisor.Manager
+	systemProxy              systemproxy.Controller
+	events                   *events.Broker
+	tunEnabled               bool
+	mixedPort                uint16
+	runtime                  Runtime
+	health                   *poolhealth.Manager
+	connmon                  *connmon.Monitor
+	controlledStopGeneration uint64
 }
 
 type Config struct {
@@ -116,7 +117,9 @@ func (s *Service) Status(ctx context.Context) Runtime {
 	s.mu.RUnlock()
 	if s.supervisor != nil {
 		snapshot := s.supervisor.Snapshot()
-		runtime.State = snapshot.State
+		if runtime.State != supervisor.StateFailed {
+			runtime.State = snapshot.State
+		}
 		if snapshot.LastError != "" {
 			runtime.LastError = snapshot.LastError
 		}
@@ -259,6 +262,7 @@ func (s *Service) Apply(ctx context.Context, input ApplyInput) (Runtime, error) 
 
 	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	if s.supervisor.Snapshot().State == supervisor.StateRunning {
+		s.markControlledStop()
 		_, err = s.supervisor.Stop(stopCtx)
 	}
 	cancel()
@@ -283,6 +287,7 @@ func (s *Service) Apply(ctx context.Context, input ApplyInput) (Runtime, error) 
 		}
 		if err := s.systemProxy.Apply(ctx, proxyHost, s.mixedPort); err != nil {
 			stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			s.markControlledStop()
 			_, _ = s.supervisor.Stop(stopCtx)
 			cancel()
 			return s.recordFailure(ctx, err), err
@@ -291,6 +296,7 @@ func (s *Service) Apply(ctx context.Context, input ApplyInput) (Runtime, error) 
 	if healthConfig != nil && s.health != nil {
 		if err := s.health.Start(*healthConfig); err != nil {
 			stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			s.markControlledStop()
 			_, _ = s.supervisor.Stop(stopCtx)
 			cancel()
 			return s.recordFailure(ctx, err), err
@@ -343,6 +349,7 @@ func (s *Service) Stop(ctx context.Context) (Runtime, error) {
 	var stopErr error
 	if s.supervisor != nil {
 		stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		s.markControlledStop()
 		_, stopErr = s.supervisor.Stop(stopCtx)
 		cancel()
 	}
@@ -371,8 +378,9 @@ func (s *Service) watchSupervisor(generation uint64) {
 		snapshot = s.supervisor.Snapshot()
 		s.mu.RLock()
 		alreadyStopped := s.runtime.State == supervisor.StateStopped
+		controlledStop := s.controlledStopGeneration == generation
 		s.mu.RUnlock()
-		if snapshot.Generation != generation || alreadyStopped {
+		if snapshot.Generation != generation || alreadyStopped || controlledStop {
 			s.operationMu.Unlock()
 			return
 		}
@@ -401,6 +409,16 @@ func (s *Service) watchSupervisor(generation uint64) {
 		s.operationMu.Unlock()
 		return
 	}
+}
+
+func (s *Service) markControlledStop() {
+	if s.supervisor == nil {
+		return
+	}
+	generation := s.supervisor.Snapshot().Generation
+	s.mu.Lock()
+	s.controlledStopGeneration = generation
+	s.mu.Unlock()
 }
 
 // Links returns the live connection monitor so the API layer can query it.

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"sing-box-webui/internal/application"
@@ -36,21 +37,22 @@ type CoreController interface {
 }
 
 type ServerConfig struct {
-	Address       string
-	DevOrigin     string
-	Version       string
-	Logger        *slog.Logger
-	Events        *events.Broker
-	Subscriptions *subscription.Manager
-	Pools         *nodepool.Manager
-	Rules         *routing.Manager
-	DNS           *dnsprofile.Manager
-	Latency       LatencyTester
-	Control       *control.Service
-	Core          CoreController
-	TrafficPolicy *trafficpolicy.Manager
-	Connectivity  *connectivity.Manager
-	WebToken      string
+	Address              string
+	DevOrigin            string
+	Version              string
+	Logger               *slog.Logger
+	Events               *events.Broker
+	Subscriptions        *subscription.Manager
+	Pools                *nodepool.Manager
+	Rules                *routing.Manager
+	DNS                  *dnsprofile.Manager
+	Latency              LatencyTester
+	Control              *control.Service
+	Core                 CoreController
+	TrafficPolicy        *trafficpolicy.Manager
+	Connectivity         *connectivity.Manager
+	WebToken             string
+	AllowUnauthenticated bool
 }
 
 type Server struct {
@@ -77,6 +79,9 @@ type Server struct {
 func NewServer(config ServerConfig) (*Server, error) {
 	if err := application.ValidateLoopbackAddress(config.Address); err != nil {
 		return nil, fmt.Errorf("validate server address: %w", err)
+	}
+	if strings.TrimSpace(config.WebToken) == "" && !config.AllowUnauthenticated {
+		return nil, fmt.Errorf("web token is required unless unauthenticated loopback access is explicitly enabled")
 	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()

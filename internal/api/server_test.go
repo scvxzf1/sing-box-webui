@@ -31,11 +31,12 @@ func (tester *fakeLatencyTester) Test(_ context.Context, _ string, ids []string)
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	server, err := NewServer(ServerConfig{
-		Address:   "127.0.0.1:11872",
-		DevOrigin: "http://127.0.0.1:5173",
-		Version:   "test",
-		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Events:    events.NewBroker(4, 2),
+		Address:              "127.0.0.1:11872",
+		DevOrigin:            "http://127.0.0.1:5173",
+		Version:              "test",
+		Logger:               slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Events:               events.NewBroker(4, 2),
+		AllowUnauthenticated: true,
 	})
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
@@ -56,6 +57,13 @@ func TestHealth(t *testing.T) {
 	}
 	if got := response.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+}
+
+func TestNewServerRequiresExplicitAuthenticationMode(t *testing.T) {
+	t.Parallel()
+	if _, err := NewServer(ServerConfig{Address: "127.0.0.1:11872"}); err == nil {
+		t.Fatal("NewServer() accepted an empty web token without an explicit unauthenticated mode")
 	}
 }
 
@@ -198,7 +206,7 @@ func TestNodeLatencyEndpoint(t *testing.T) {
 		},
 	}
 	server, err := NewServer(ServerConfig{
-		Address: "127.0.0.1:11872", DevOrigin: "http://127.0.0.1:5173", Latency: tester,
+		Address: "127.0.0.1:11872", DevOrigin: "http://127.0.0.1:5173", Latency: tester, AllowUnauthenticated: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -235,7 +243,7 @@ func TestRulesEndpointCreatesAndListsManualRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	server, err := NewServer(ServerConfig{
-		Address: "127.0.0.1:11872", DevOrigin: "http://127.0.0.1:5173", Rules: rules,
+		Address: "127.0.0.1:11872", DevOrigin: "http://127.0.0.1:5173", Rules: rules, AllowUnauthenticated: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -270,7 +278,7 @@ func TestRulePoolsEndpointAtomicallyReplacesPoolRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	server, err := NewServer(ServerConfig{
-		Address: "127.0.0.1:11872", DevOrigin: "http://127.0.0.1:5173", Rules: rules,
+		Address: "127.0.0.1:11872", DevOrigin: "http://127.0.0.1:5173", Rules: rules, AllowUnauthenticated: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -324,7 +332,7 @@ func TestDnsProfileEndpointRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	server, err := NewServer(ServerConfig{
-		Address: "127.0.0.1:11872", DevOrigin: "http://127.0.0.1:5173", DNS: dns,
+		Address: "127.0.0.1:11872", DevOrigin: "http://127.0.0.1:5173", DNS: dns, AllowUnauthenticated: true,
 	})
 	if err != nil {
 		t.Fatal(err)

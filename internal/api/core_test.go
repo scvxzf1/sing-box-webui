@@ -38,7 +38,7 @@ func TestCoreStatusAndUpdate(t *testing.T) {
 		UpdateSupported: true, Platform: "linux/amd64",
 	}}
 	server, err := NewServer(ServerConfig{
-		Address: "127.0.0.1:11872", DevOrigin: "http://127.0.0.1:5173", Core: controller,
+		Address: "127.0.0.1:11872", DevOrigin: "http://127.0.0.1:5173", Core: controller, AllowUnauthenticated: true,
 	})
 	if err != nil {
 		t.Fatal(err)

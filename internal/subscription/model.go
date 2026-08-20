@@ -102,9 +102,6 @@ type View struct {
 
 func toView(subscription Subscription, includeNodes bool) View {
 	displayURL := redactURL(subscription.URL)
-	if includeNodes {
-		displayURL = subscription.URL
-	}
 	view := View{
 		ID:                    subscription.ID,
 		Name:                  subscription.Name,

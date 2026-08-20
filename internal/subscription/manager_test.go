@@ -12,14 +12,18 @@ import (
 )
 
 type fakeRuleSink struct {
-	syncErr   error
-	deleteErr error
-	reloads   int
+	syncErr     error
+	deleteErr   error
+	deleteCalls int
+	reloads     int
 }
 
 func (s *fakeRuleSink) SyncSubscriptionRules(string, string, []ImportedRule) error { return s.syncErr }
-func (s *fakeRuleSink) DeleteSubscriptionRules(string) error                       { return s.deleteErr }
-func (s *fakeRuleSink) ReloadRules() error                                         { s.reloads++; return nil }
+func (s *fakeRuleSink) DeleteSubscriptionRules(string) error {
+	s.deleteCalls++
+	return s.deleteErr
+}
+func (s *fakeRuleSink) ReloadRules() error { s.reloads++; return nil }
 
 type fakeFetcher struct {
 	content []byte
@@ -82,8 +86,8 @@ func TestManagerSubscriptionWorkflow(t *testing.T) {
 	if len(created.Nodes) != 1 || created.Nodes[0].Server != "proxy.example.com" {
 		t.Fatalf("unexpected sanitized nodes: %+v", created.Nodes)
 	}
-	if created.URL != "https://subscription.example.com/token?access=secret" {
-		t.Fatalf("detail URL = %q, want complete URL", created.URL)
+	if created.URL != "https://subscription.example.com/token?redacted" {
+		t.Fatalf("detail URL = %q, want redacted URL", created.URL)
 	}
 	listed := manager.List()
 	if len(listed) != 1 || listed[0].URL != "https://subscription.example.com/token?redacted" {
@@ -263,6 +267,29 @@ func TestDeleteCommitsWhenRuleDeletionFails(t *testing.T) {
 	}
 	if len(manager.List()) != 0 {
 		t.Fatal("subscription deletion was not committed")
+	}
+}
+
+func TestDeleteRetriesDependencyCleanupAfterSubscriptionIsGone(t *testing.T) {
+	t.Parallel()
+	sink := &fakeRuleSink{deleteErr: errors.New("rule store unavailable")}
+	manager := &Manager{
+		path:     filepath.Join(t.TempDir(), "subscriptions.json"),
+		items:    []Subscription{{ID: "sub-1", Name: "Main", URL: "https://subscription.example.com", Active: true}},
+		ruleSink: sink,
+	}
+	if err := manager.persistLocked(); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Delete("sub-1"); err == nil {
+		t.Fatal("Delete() succeeded despite rule deletion failure")
+	}
+	sink.deleteErr = nil
+	if err := manager.Delete("sub-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second Delete() error = %v, want ErrNotFound after cleanup", err)
+	}
+	if sink.deleteCalls != 2 || sink.reloads != 1 {
+		t.Fatalf("cleanup calls = %d, reloads = %d; want 2 and 1", sink.deleteCalls, sink.reloads)
 	}
 }
 

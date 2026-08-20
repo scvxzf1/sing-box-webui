@@ -156,6 +156,41 @@ func TestDeleteSubscriptionMembersRemovesEveryReference(t *testing.T) {
 	}
 }
 
+func TestReconcileReferencesRemovesUnavailableMembers(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	subscriptionDirectory := filepath.Join(root, "subscriptions")
+	if err := os.MkdirAll(subscriptionDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content, err := json.Marshal([]subscription.Subscription{{
+		ID: "sub-1", Nodes: []subscription.Node{{ID: "node-1", Type: "trojan", Server: "proxy.example.com", Port: 443}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subscriptionDirectory, "subscriptions.json"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	subscriptions, err := subscription.OpenManager(subscriptionDirectory, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{path: filepath.Join(root, "pools.json"), subscriptions: subscriptions, items: []Pool{{
+		ID: "pool-1", Members: []Member{
+			{SubscriptionID: "sub-1", NodeID: "node-1"},
+			{SubscriptionID: "sub-1", NodeID: "missing"},
+			{SubscriptionID: "missing", NodeID: "node-2"},
+		},
+	}}}
+	if err := manager.ReconcileReferences(); err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.items[0].Members; len(got) != 1 || got[0].NodeID != "node-1" {
+		t.Fatalf("reconciled members = %+v", got)
+	}
+}
+
 func TestReorderPersistsNodePoolOrder(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

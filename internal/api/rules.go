@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"sing-box-webui/internal/routing"
 )
@@ -102,7 +104,9 @@ func (s *Server) reapplyRules(w http.ResponseWriter, r *http.Request) bool {
 	if s.control == nil {
 		return true
 	}
-	if _, err := s.control.ReapplyRules(r.Context()); err != nil {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if _, err := s.control.ReapplyRules(ctx); err != nil {
 		s.writeInternalError(w, r, http.StatusConflict, "runtime_reapply_failed", "Rule was saved but the running proxy could not reload it", err)
 		return false
 	}

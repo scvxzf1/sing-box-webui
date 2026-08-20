@@ -86,6 +86,7 @@ type memberState struct {
 }
 
 type Manager struct {
+	lifecycleMu    sync.Mutex
 	mu             sync.RWMutex
 	cancel         context.CancelFunc
 	done           chan struct{}
@@ -111,7 +112,9 @@ func (m *Manager) Start(config Config) error {
 	if err := validateConfig(config); err != nil {
 		return err
 	}
-	m.Stop()
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	m.stopLocked()
 	ctx, cancel := context.WithCancel(context.Background())
 	members := make(map[string]*memberState, len(config.Targets))
 	now := time.Now().UTC()
@@ -136,6 +139,12 @@ func (m *Manager) Start(config Config) error {
 }
 
 func (m *Manager) Stop() {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	m.stopLocked()
+}
+
+func (m *Manager) stopLocked() {
 	m.mu.Lock()
 	cancel, done := m.cancel, m.done
 	m.cancel, m.done = nil, nil

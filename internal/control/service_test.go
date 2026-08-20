@@ -50,6 +50,13 @@ func TestStopTerminatesCoreWhenProxyRestoreFails(t *testing.T) {
 	if state := manager.Snapshot().State; state != supervisor.StateStopped {
 		t.Fatalf("supervisor state = %q, want stopped", state)
 	}
+	time.Sleep(500 * time.Millisecond)
+	if got := proxy.restoreCount(); got != 1 {
+		t.Fatalf("system proxy restore count = %d, want 1", got)
+	}
+	if runtime := service.Status(context.Background()); runtime.State != supervisor.StateFailed || runtime.LastError == "" {
+		t.Fatalf("runtime after failed cleanup = %+v, want failed state with error", runtime)
+	}
 }
 
 func TestSupervisorWatcherCleansUpUnexpectedExit(t *testing.T) {

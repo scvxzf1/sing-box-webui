@@ -257,6 +257,42 @@ func (m *Manager) DeleteSubscriptionRules(subscriptionID string) error {
 	return nil
 }
 
+// ReconcileSubscriptionRules removes imported rules whose owning
+// subscription no longer exists. This repairs interrupted cross-store deletes
+// before the runtime can compile stale rules.
+func (m *Manager) ReconcileSubscriptionRules(subscriptionIDs []string) error {
+	valid := make(map[string]struct{}, len(subscriptionIDs))
+	for _, id := range subscriptionIDs {
+		valid[id] = struct{}{}
+	}
+	m.mu.Lock()
+	previousRules := cloneRules(m.rules)
+	kept := m.rules[:0]
+	changed := false
+	for _, rule := range m.rules {
+		if rule.Origin == OriginSubscription {
+			if _, exists := valid[rule.SubscriptionID]; !exists {
+				changed = true
+				continue
+			}
+		}
+		kept = append(kept, rule)
+	}
+	if !changed {
+		m.mu.Unlock()
+		return nil
+	}
+	m.rules = kept
+	if err := m.persistLocked(); err != nil {
+		m.rules = previousRules
+		m.mu.Unlock()
+		return err
+	}
+	m.mu.Unlock()
+	m.publish("subscription.rules.reconciled", map[string]int{"subscriptionCount": len(subscriptionIDs)})
+	return nil
+}
+
 func (m *Manager) ReloadRules() error {
 	m.mu.RLock()
 	reload := m.reload

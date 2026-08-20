@@ -252,6 +252,11 @@ func (m *Manager) Update(id string, input UpdateInput) (View, error) {
 func (m *Manager) Delete(id string) error {
 	release, err := m.acquireRefreshLock(id)
 	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			if cleanupErr := m.cleanupDependencies(id); cleanupErr != nil {
+				return fmt.Errorf("subscription not found and dependent cleanup failed: %w", cleanupErr)
+			}
+		}
 		return err
 	}
 	defer release()
@@ -272,9 +277,19 @@ func (m *Manager) Delete(id string) error {
 		m.mu.Unlock()
 		return err
 	}
+	m.mu.Unlock()
+	m.publish("subscription.deleted", map[string]string{"subscriptionId": id})
+	if err := m.cleanupDependencies(id); err != nil {
+		return fmt.Errorf("subscription deleted but dependent cleanup failed: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) cleanupDependencies(id string) error {
+	m.mu.RLock()
 	sink := m.ruleSink
 	poolSink := m.poolSink
-	m.mu.Unlock()
+	m.mu.RUnlock()
 	var cleanupErrors []error
 	if poolSink != nil {
 		if err := poolSink.DeleteSubscriptionMembers(id); err != nil {
@@ -289,7 +304,7 @@ func (m *Manager) Delete(id string) error {
 		}
 	}
 	if err := errors.Join(cleanupErrors...); err != nil {
-		return fmt.Errorf("subscription deleted but dependent cleanup failed: %w", err)
+		return err
 	}
 	return nil
 }

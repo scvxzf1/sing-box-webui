@@ -96,6 +96,29 @@ func TestSubscriptionRulesDefaultOffAndPreserveEnabledState(t *testing.T) {
 	}
 }
 
+func TestReconcileSubscriptionRulesRemovesOrphans(t *testing.T) {
+	t.Parallel()
+	manager, err := OpenManager(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"kept", "orphan"} {
+		if err := manager.SyncSubscriptionRules(id, id, []subscription.ImportedRule{{
+			Name: id, Action: "direct", Supported: true, Source: id,
+			Conditions: []subscription.ImportedRuleCondition{{Type: "ip_is_private"}},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := manager.ReconcileSubscriptionRules([]string{"kept"}); err != nil {
+		t.Fatal(err)
+	}
+	rules := manager.List()
+	if len(rules) != 2 || rules[0].SubscriptionID != "kept" {
+		t.Fatalf("reconciled rules = %+v", rules)
+	}
+}
+
 func TestSubscriptionSyncReloadsRuntimeAndKeepsDuplicateIDsUnique(t *testing.T) {
 	manager, err := OpenManager(t.TempDir(), nil)
 	if err != nil {

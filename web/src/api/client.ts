@@ -331,12 +331,12 @@ export function deleteConnectivityTarget(id: string): Promise<void> {
   return request(`/api/v1/connectivity/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
-export function testConnectivity(id: string): Promise<ConnectivityTestResponse> {
-  return request(`/api/v1/connectivity/${encodeURIComponent(id)}/test`, { method: 'POST' })
+export function testConnectivity(id: string, signal?: AbortSignal): Promise<ConnectivityTestResponse> {
+	return request(`/api/v1/connectivity/${encodeURIComponent(id)}/test`, { method: 'POST', signal })
 }
 
-export function testAllConnectivity(): Promise<ConnectivityTestResponse> {
-  return request('/api/v1/connectivity/test', { method: 'POST' })
+export function testAllConnectivity(signal?: AbortSignal): Promise<ConnectivityTestResponse> {
+	return request('/api/v1/connectivity/test', { method: 'POST', signal })
 }
 
 export function runConnectivityDiagnostic(input: ConnectivityDiagnosticInput): Promise<ConnectivityDiagnosticResult> {

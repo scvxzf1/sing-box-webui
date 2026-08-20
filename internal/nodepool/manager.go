@@ -405,6 +405,39 @@ func (m *Manager) DeleteSubscriptionMembers(subscriptionID string) error {
 	return nil
 }
 
+// ReconcileReferences removes members that no longer resolve to a stored
+// subscription node. It is intended to make interrupted cross-store updates
+// converge during startup.
+func (m *Manager) ReconcileReferences() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	previousItems := clonePools(m.items)
+	changed := false
+	for index := range m.items {
+		pool := &m.items[index]
+		members := make([]Member, 0, len(pool.Members))
+		for _, member := range pool.Members {
+			if _, _, err := m.subscriptions.SelectedNode(member.SubscriptionID, member.NodeID); err != nil {
+				changed = true
+				continue
+			}
+			members = append(members, member)
+		}
+		if len(members) != len(pool.Members) {
+			pool.Members = members
+			pool.UpdatedAt = time.Now().UTC()
+		}
+	}
+	if !changed {
+		return nil
+	}
+	if err := m.persistLocked(); err != nil {
+		m.items = previousItems
+		return err
+	}
+	return nil
+}
+
 func nodeIdentity(node subscription.Node) string {
 	node.ID = ""
 	node.Name = ""

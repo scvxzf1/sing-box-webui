@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Gauge, Loader2, Play, Plus, Trash2 } from 'lucide-react'
 import {
@@ -27,6 +27,11 @@ export function QuickTest({ step }: { step: number }) {
   const [url, setUrl] = useState('')
   const [testError, setTestError] = useState<unknown>(null)
   const [columns, setColumns] = useState<QuickTestColumns>(readColumns)
+  const activeRequest = useRef<AbortController | null>(null)
+
+  useEffect(() => () => {
+    activeRequest.current?.abort()
+  }, [])
 
   useEffect(() => {
     try {
@@ -61,32 +66,44 @@ export function QuickTest({ step }: { step: number }) {
   })
 
   const runSingle = async (id: string) => {
+    if (activeRequest.current) return
+    const controller = new AbortController()
+    activeRequest.current = controller
     setTestError(null)
     setTestingIds((previous) => new Set(previous).add(id))
     try {
-      const response = await testConnectivity(id)
+      const response = await testConnectivity(id, controller.signal)
+      if (controller.signal.aborted) return
       mergeResults(response.items)
     } catch (error) {
-      setTestError(error)
+      if (!controller.signal.aborted) setTestError(error)
     } finally {
-      setTestingIds((previous) => {
-        const next = new Set(previous)
-        next.delete(id)
-        return next
-      })
+      if (activeRequest.current === controller) activeRequest.current = null
+      if (!controller.signal.aborted) {
+        setTestingIds((previous) => {
+          const next = new Set(previous)
+          next.delete(id)
+          return next
+        })
+      }
     }
   }
 
   const runAll = async () => {
+    if (activeRequest.current) return
+    const controller = new AbortController()
+    activeRequest.current = controller
     setTestError(null)
     setTestingAll(true)
     try {
-      const response = await testAllConnectivity()
+      const response = await testAllConnectivity(controller.signal)
+      if (controller.signal.aborted) return
       mergeResults(response.items)
     } catch (error) {
-      setTestError(error)
+      if (!controller.signal.aborted) setTestError(error)
     } finally {
-      setTestingAll(false)
+      if (activeRequest.current === controller) activeRequest.current = null
+      if (!controller.signal.aborted) setTestingAll(false)
     }
   }
 
@@ -186,7 +203,7 @@ export function QuickTest({ step }: { step: number }) {
                     <button
                       className="button button--ghost button--sm"
                       type="button"
-                      disabled={busy && !testing}
+                      disabled={busy}
                       onClick={() => void runSingle(target.id)}
                       aria-label={`测试 ${target.name}`}
                     >

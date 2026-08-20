@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"sing-box-webui/internal/core"
 )
@@ -20,7 +22,9 @@ func (s *Server) coreStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusServiceUnavailable, "core_unavailable", "Core management is unavailable")
 		return
 	}
-	info, err := s.core.Info(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	info, err := s.core.Info(ctx)
 	if err != nil {
 		s.writeInternalError(w, r, http.StatusServiceUnavailable, "core_unavailable", "Core information is unavailable", err)
 		return
@@ -46,7 +50,9 @@ func (s *Server) updateCore(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "request_invalid", err.Error())
 		return
 	}
-	info, err := s.core.Update(r.Context(), input.Version)
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	info, err := s.core.Update(ctx, input.Version)
 	if err != nil {
 		s.writeCoreOperationError(w, r, "core_update_failed", err)
 		return
@@ -67,7 +73,9 @@ func (s *Server) rollbackCore(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusConflict, "core_busy", "请先停止代理，再回滚 sing-box 核心")
 		return
 	}
-	info, err := s.core.Rollback(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	info, err := s.core.Rollback(ctx)
 	if err != nil {
 		s.writeCoreOperationError(w, r, "core_rollback_failed", err)
 		return

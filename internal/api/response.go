@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 )
 
@@ -37,6 +39,10 @@ func (s *Server) writeInternalError(w http.ResponseWriter, r *http.Request, stat
 	requestID, _ := r.Context().Value(requestIDKey{}).(string)
 	if s.logger != nil {
 		s.logger.Error("API operation failed", "request_id", requestID, "code", code, "error", err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		status = http.StatusGatewayTimeout
+		message = "The operation timed out"
 	}
 	writeError(w, r, status, code, message)
 }
