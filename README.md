@@ -62,6 +62,10 @@ sudo setcap cap_net_admin+ep "$CORE"  # 仅首次或核心版本切换后执行
 对新的 `var/data/core/sing-box` 目标再授予一次。不要对 `go`、Vite、WebUI 后端或整个
 开发脚本授予权限，也不要使用 `sudo ./scripts/dev.sh`。
 
+需要一键完成首次授权并启动时，可执行仓库根目录的 `./start-tun.sh`。它只通过一次
+`sudo setcap` 给实际 sing-box 核心授予 `CAP_NET_ADMIN`，Web/API、Go 和 Vite 仍以当前
+普通用户运行；核心版本切换后再次执行即可重新授权。
+
 Ubuntu 使用 systemd-resolved 时，sing-box 会通过 `resolvectl` 为 `singtun0` 设置和恢复
 DNS。首次使用可安装项目提供的最小 Polkit 规则：
 

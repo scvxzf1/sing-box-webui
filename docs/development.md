@@ -199,6 +199,8 @@ TUN 开发开始前，必须先完成 [ADR-0001](adr/README.md#阻塞性决策�
 验证当前 sing-box 文件已有 `CAP_NET_ADMIN`，绝不调用 `sudo` 或 `pkexec`。首次授权及
 托管核心更新/回滚后的重新授权命令见项目 README；capability 必须加在解析符号链接后
 得到的版本文件上，不能加在 `var/data/core/sing-box` 符号链接本身。
+需要一键完成授权和启动时可执行仓库根目录的 `./start-tun.sh`；它只用 `sudo setcap`
+授予 sing-box 核心能力，不会以 root 启动 Go 或 Vite。
 
 ## 7. fake sing-box
 
