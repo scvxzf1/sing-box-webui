@@ -1,14 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createPortal } from 'react-dom'
-import { Check, ChevronLeft, ChevronRight, FolderPlus, Gauge, LoaderCircle, LockKeyhole, Search, X } from 'lucide-react'
-import { getSubscription, listNodePools, listSubscriptions, selectNode, testNodeLatency, updateNodePool } from '../api/client'
-import type { LatencyResult, Node, NodePool } from '../api/types'
+import { Check, ChevronLeft, ChevronRight, Copy, FolderPlus, Gauge, Link2, LoaderCircle, LockKeyhole, Search, X } from 'lucide-react'
+import { getSubscription, getSubscriptionNodeLink, importSubscriptionNodes, listNodePools, listSubscriptions, selectNode, testNodeLatency, updateNodePool } from '../api/client'
+import type { ImportNodeItem, LatencyResult, Node, NodeLink, NodePool } from '../api/types'
 import { InlineError } from '../components/InlineError'
 import { PageHeading } from '../components/PageHeading'
 
 type GridColumns = 1 | 2 | 3 | 4
 type PageSize = 48 | 72 | 96 | 144
+type ImportPhase = 'idle' | 'importing' | 'testing'
+type ImportDisplayItem = ImportNodeItem & {
+  latency?: LatencyResult
+  latencyFailed?: boolean
+  testing?: boolean
+}
 
 const gridColumnsStorageKey = 'sing-box-webui:nodes-grid-columns'
 const pageSizeStorageKey = 'sing-box-webui:nodes-page-size'
@@ -27,7 +33,20 @@ export function NodesView() {
   const [latencyError, setLatencyError] = useState<unknown>(null)
   const [selectedNodeIDs, setSelectedNodeIDs] = useState<Set<string>>(new Set())
   const [addTargets, setAddTargets] = useState<Node[]>([])
+  const [importDialogOpen, setImportDialogOpen] = useState(false)
+  const [importLinks, setImportLinks] = useState('')
+  const [importItems, setImportItems] = useState<ImportDisplayItem[]>([])
+  const [importSummary, setImportSummary] = useState<{ added: number; duplicate: number; invalid: number } | null>(null)
+  const [importPhase, setImportPhase] = useState<ImportPhase>('idle')
+  const [importError, setImportError] = useState<unknown>(null)
+  const [linkNode, setLinkNode] = useState<Node | null>(null)
+  const [nodeLink, setNodeLink] = useState<NodeLink | null>(null)
+  const [nodeLinkError, setNodeLinkError] = useState<unknown>(null)
+  const [nodeLinkLoading, setNodeLinkLoading] = useState(false)
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const selectAllRef = useRef<HTMLInputElement>(null)
+  const importGenerationRef = useRef(0)
+  const nodeLinkGenerationRef = useRef(0)
   const currentSubscriptionRef = useRef(subscriptionId)
   const subscriptionGenerationRef = useRef(0)
   currentSubscriptionRef.current = subscriptionId
@@ -67,11 +86,17 @@ export function NodesView() {
 
   useEffect(() => {
     subscriptionGenerationRef.current += 1
+    nodeLinkGenerationRef.current += 1
     setLatencyResults({})
     setTestingIDs(new Set())
     setLatencyError(null)
     setSelectedNodeIDs(new Set())
     setAddTargets([])
+    setLinkNode(null)
+    setNodeLink(null)
+    setNodeLinkError(null)
+    setNodeLinkLoading(false)
+    setCopyState('idle')
   }, [subscriptionId])
 
   const detailQuery = useQuery({
@@ -172,6 +197,132 @@ export function NodesView() {
     })
   }
 
+  const toggleBatchNode = (nodeID: string) => {
+    setSelectedNodeIDs((current) => {
+      const next = new Set(current)
+      if (next.has(nodeID)) next.delete(nodeID)
+      else next.add(nodeID)
+      return next
+    })
+  }
+
+  const closeImportDialog = () => {
+    importGenerationRef.current += 1
+    setImportDialogOpen(false)
+    setImportLinks('')
+    setImportItems([])
+    setImportSummary(null)
+    setImportPhase('idle')
+    setImportError(null)
+  }
+
+  const closeNodeLinkDialog = () => {
+    nodeLinkGenerationRef.current += 1
+    setLinkNode(null)
+    setNodeLink(null)
+    setNodeLinkError(null)
+    setNodeLinkLoading(false)
+    setCopyState('idle')
+  }
+
+  const openNodeLinkDialog = async (node: Node) => {
+    const requestGeneration = nodeLinkGenerationRef.current + 1
+    nodeLinkGenerationRef.current = requestGeneration
+    setLinkNode(node)
+    setNodeLink(null)
+    setNodeLinkError(null)
+    setNodeLinkLoading(true)
+    setCopyState('idle')
+    try {
+      const result = await getSubscriptionNodeLink(subscriptionId, node.id)
+      if (nodeLinkGenerationRef.current === requestGeneration) setNodeLink(result)
+    } catch (error) {
+      if (nodeLinkGenerationRef.current === requestGeneration) setNodeLinkError(error)
+    } finally {
+      if (nodeLinkGenerationRef.current === requestGeneration) setNodeLinkLoading(false)
+    }
+  }
+
+  const copyNodeLink = async () => {
+    if (!nodeLink) return
+    try {
+      await navigator.clipboard.writeText(nodeLink.link)
+      setCopyState('copied')
+    } catch {
+      setCopyState('failed')
+    }
+  }
+
+  useEffect(() => {
+    if (!linkNode) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeNodeLinkDialog()
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    return () => document.removeEventListener('keydown', closeOnEscape)
+  }, [linkNode])
+
+  const importAndTestNodes = async () => {
+    if (!subscriptionId || !importLinks.trim() || importPhase !== 'idle') return
+    const requestSubscription = subscriptionId
+    const requestGeneration = importGenerationRef.current + 1
+    importGenerationRef.current = requestGeneration
+    setImportPhase('importing')
+    setImportItems([])
+    setImportSummary(null)
+    setImportError(null)
+    try {
+      const response = await importSubscriptionNodes(requestSubscription, { links: importLinks })
+      if (importGenerationRef.current !== requestGeneration) return
+
+      const nodeIDs = [...new Set(response.items.flatMap((item) => item.node ? [item.node.id] : []))]
+      const testableNodeIDs = new Set(nodeIDs)
+      setImportSummary({
+        added: response.addedCount,
+        duplicate: response.duplicateCount,
+        invalid: response.invalidCount,
+      })
+      setImportItems(response.items.map((item) => ({
+        ...item,
+        testing: item.node ? testableNodeIDs.has(item.node.id) : false,
+      })))
+      queryClient.setQueryData(['subscription', requestSubscription], response.subscription)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['subscription', requestSubscription] }),
+        queryClient.invalidateQueries({ queryKey: ['subscriptions'] }),
+      ])
+      if (!nodeIDs.length) {
+        setImportPhase('idle')
+        return
+      }
+
+      setImportPhase('testing')
+      try {
+        const latencyResponse = await testNodeLatency(requestSubscription, { nodeIds: nodeIDs })
+        if (importGenerationRef.current !== requestGeneration) return
+        const results = new Map(latencyResponse.items.map((item) => [item.nodeId, item]))
+        setImportItems((current) => current.map((item) => ({
+          ...item,
+          testing: false,
+          latency: item.node ? results.get(item.node.id) : undefined,
+        })))
+      } catch (error) {
+        if (importGenerationRef.current !== requestGeneration) return
+        setImportError(error)
+        setImportItems((current) => current.map((item) => ({
+          ...item,
+          testing: false,
+          latencyFailed: Boolean(item.node),
+        })))
+      }
+      setImportPhase('idle')
+    } catch (error) {
+      if (importGenerationRef.current !== requestGeneration) return
+      setImportError(error)
+      setImportPhase('idle')
+    }
+  }
+
   return (
     <>
       <PageHeading eyebrow="PROXY NODES" title="节点选择" />
@@ -221,6 +372,14 @@ export function NodesView() {
           <button
             className="button"
             type="button"
+            disabled={!subscriptionId}
+            onClick={() => setImportDialogOpen(true)}
+          >
+            <Link2 size={16} aria-hidden="true" />导入节点
+          </button>
+          <button
+            className="button"
+            type="button"
             disabled={!selectedNodes.length || addToPoolMutation.isPending}
             onClick={() => setAddTargets(selectedNodes)}
           >
@@ -255,73 +414,75 @@ export function NodesView() {
             {pageNodes.map((node) => {
               const result = latencyResults[node.id]
               const isTesting = testingIDs.has(node.id)
+              const isBatchSelected = selectedNodeIDs.has(node.id)
               return (
-                <article className={`node-card ${node.selected ? 'node-card--selected' : ''} ${selectedNodeIDs.has(node.id) ? 'node-card--batch-selected' : ''}`} role="listitem" key={node.id}>
-                  <div className="node-card-heading">
-                    <label className="node-batch-selection" title={`批量选择 ${node.name}`}>
-                      <input
-                        type="checkbox"
-                        aria-label={`批量选择 ${node.name}`}
-                        checked={selectedNodeIDs.has(node.id)}
-                        onChange={(event) => setSelectedNodeIDs((current) => {
-                          const next = new Set(current)
-                          if (event.target.checked) next.add(node.id)
-                          else next.delete(node.id)
-                          return next
-                        })}
-                      />
-                      <span className="protocol-label">{node.type}</span>
-                    </label>
-                    <span className={node.tls ? 'security-on' : 'security-off'}>
-                      {node.tls && <LockKeyhole size={13} aria-hidden="true" />}
-                      {node.tls ? 'TLS' : '无 TLS'}
+                <article
+                  className="node-card"
+                  role="listitem"
+                  key={node.id}
+                  onContextMenu={(event) => {
+                    event.preventDefault()
+                    void openNodeLinkDialog(node)
+                  }}
+                >
+                  <button
+                    className={`node-card-region node-card-region--current ${node.selected ? 'node-card-region--active' : ''}`}
+                    type="button"
+                    title={`设 ${node.name} 为当前节点`}
+                    aria-label={`设 ${node.name} 为当前节点`}
+                    aria-pressed={node.selected}
+                    disabled={selectMutation.isPending}
+                    onClick={() => selectMutation.mutate({ subscriptionId, nodeId: node.id })}
+                  />
+                  <button
+                    className={`node-card-region node-card-region--batch ${isBatchSelected ? 'node-card-region--active' : ''}`}
+                    type="button"
+                    title={`批量选择 ${node.name}`}
+                    aria-label={`批量选择 ${node.name}`}
+                    aria-pressed={isBatchSelected}
+                    onClick={() => toggleBatchNode(node.id)}
+                  />
+                  <button
+                    className="node-card-region node-card-region--pool"
+                    type="button"
+                    title={`将 ${node.name} 加入节点池`}
+                    aria-label={`将 ${node.name} 加入节点池`}
+                    onClick={() => setAddTargets([node])}
+                  >
+                    <FolderPlus size={16} aria-hidden="true" />
+                  </button>
+                  <button
+                    className={`node-card-region node-card-region--test ${isTesting ? 'node-card-region--testing' : ''}`}
+                    type="button"
+                    title={`测试 ${node.name} 真实代理延迟`}
+                    aria-label={`测试 ${node.name} 延迟`}
+                    aria-busy={isTesting}
+                    disabled={isTesting || testingIDs.size >= maxConcurrentManualTests}
+                    onClick={() => void testNodes([node.id])}
+                  >
+                    <span
+                      className={`latency-result latency-result--${result?.status ?? 'idle'}`}
+                      title={result?.detail}
+                      aria-live="polite"
+                    >
+                      {formatLatency(result, isTesting)}
                     </span>
-                  </div>
-                  <strong className="node-card-name" title={node.name}>{node.name}</strong>
-                  <code title={`${node.server}:${node.port}`}>{node.server}:{node.port}</code>
-                  <div className="node-card-footer">
-                    <label className="node-selection">
-                      <input
-                        type="radio"
-                        name="selected-node"
-                        checked={node.selected}
-                        disabled={selectMutation.isPending}
-                        onChange={() => selectMutation.mutate({ subscriptionId, nodeId: node.id })}
-                      />
-                      <span>{node.selected ? '已选择' : '选择'}</span>
-                    </label>
-                    <div className="latency-control">
-                      <span
-                        className={`latency-result latency-result--${result?.status ?? 'idle'}`}
-                        title={result?.detail}
-                        aria-live="polite"
-                      >
-                        {formatLatency(result, isTesting)}
+                    {isTesting ? (
+                      <LoaderCircle className="spin" size={16} aria-hidden="true" />
+                    ) : (
+                      <Gauge size={16} aria-hidden="true" />
+                    )}
+                  </button>
+                  <div className="node-card-content">
+                    <div className="node-card-heading">
+                      <span className="protocol-label">{node.type}</span>
+                      <span className={node.tls ? 'security-on' : 'security-off'}>
+                        {node.tls && <LockKeyhole size={13} aria-hidden="true" />}
+                        {node.tls ? 'TLS' : '无 TLS'}
                       </span>
-                      <button
-                        className="icon-button"
-                        type="button"
-                        title={`将 ${node.name} 加入节点池`}
-                        aria-label={`将 ${node.name} 加入节点池`}
-                        onClick={() => setAddTargets([node])}
-                      >
-                        <FolderPlus size={16} aria-hidden="true" />
-                      </button>
-                      <button
-                        className="icon-button"
-                        type="button"
-                        title={`测试 ${node.name} 真实代理延迟`}
-                        aria-label={`测试 ${node.name} 延迟`}
-                        disabled={isTesting || testingIDs.size >= maxConcurrentManualTests}
-                        onClick={() => void testNodes([node.id])}
-                      >
-                        {isTesting ? (
-                          <LoaderCircle className="spin" size={16} aria-hidden="true" />
-                        ) : (
-                          <Gauge size={16} aria-hidden="true" />
-                        )}
-                      </button>
                     </div>
+                    <strong className="node-card-name" title={node.name}>{node.name}</strong>
+                    <code title={`${node.server}:${node.port}`}>{node.server}:{node.port}</code>
                   </div>
                 </article>
               )
@@ -368,6 +529,122 @@ export function NodesView() {
           </div>
         )}
       </section>
+      {linkNode && createPortal(
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => { if (event.target === event.currentTarget) closeNodeLinkDialog() }}
+        >
+          <section className="node-link-dialog" role="dialog" aria-modal="true" aria-labelledby="node-link-title">
+            <div className="pool-picker-heading">
+              <div>
+                <span>{linkNode.type} · {linkNode.server}:{linkNode.port}</span>
+                <strong id="node-link-title">{linkNode.name}</strong>
+              </div>
+              <button className="icon-button" type="button" title="关闭" aria-label="关闭节点链接" onClick={closeNodeLinkDialog}>
+                <X size={16} aria-hidden="true" />
+              </button>
+            </div>
+            <div className="node-link-content">
+              <label>
+                <span>{nodeLink?.source === 'generated' ? '按当前配置生成的节点链接' : '原始节点链接'}</span>
+                <textarea
+                  aria-label="原始节点链接"
+                  rows={6}
+                  readOnly
+                  spellCheck={false}
+                  value={nodeLink?.link ?? ''}
+                  placeholder={nodeLinkLoading ? '正在读取节点链接' : ''}
+                />
+              </label>
+              {nodeLinkError && <InlineError error={nodeLinkError} />}
+              <div className="node-link-actions">
+                <span aria-live="polite">
+                  {copyState === 'copied' ? '已复制' : copyState === 'failed' ? '复制失败，请手动选择链接' : ''}
+                </span>
+                <button className="button" type="button" onClick={closeNodeLinkDialog}>关闭</button>
+                <button className="button button--primary" type="button" disabled={!nodeLink || nodeLinkLoading} onClick={() => void copyNodeLink()}>
+                  {nodeLinkLoading ? <LoaderCircle className="spin" size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
+                  {nodeLinkLoading ? '读取中' : '复制链接'}
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>,
+        document.body,
+      )}
+      {importDialogOpen && createPortal(
+        <div className="modal-backdrop">
+          <section className="node-import-dialog" role="dialog" aria-modal="true" aria-labelledby="node-import-title">
+            <div className="pool-picker-heading">
+              <div>
+                <span>{detailQuery.data?.name ?? '当前订阅'}</span>
+                <strong id="node-import-title">手动导入节点</strong>
+              </div>
+              <button className="icon-button" type="button" title="关闭" aria-label="关闭导入节点" onClick={closeImportDialog}>
+                <X size={16} aria-hidden="true" />
+              </button>
+            </div>
+            <form className="node-import-form" onSubmit={(event) => { event.preventDefault(); void importAndTestNodes() }}>
+              <label className="node-import-input">
+                <span>节点链接（每行一个）</span>
+                <textarea
+                  aria-label="节点链接"
+                  value={importLinks}
+                  rows={8}
+                  spellCheck={false}
+                  autoFocus
+                  disabled={importPhase !== 'idle'}
+                  onChange={(event) => setImportLinks(event.target.value)}
+                />
+              </label>
+              {importError && <InlineError error={importError} />}
+              {importSummary && (
+                <div className="node-import-summary" aria-live="polite">
+                  <span className="node-import-summary--added">已添加 {importSummary.added}</span>
+                  <span className="node-import-summary--duplicate">已存在 {importSummary.duplicate}</span>
+                  <span className="node-import-summary--invalid">无效 {importSummary.invalid}</span>
+                </div>
+              )}
+              {importItems.length > 0 && (
+                <div className="node-import-results" aria-label="导入结果">
+                  {importItems.map((item) => (
+                    <div className={`node-import-result node-import-result--${item.status}`} key={`${item.line}-${item.node?.id ?? 'invalid'}`}>
+                      <span className="node-import-line">第 {item.line} 行</span>
+                      <div className="node-import-result-main">
+                        {item.node ? (
+                          <>
+                            <strong title={item.node.name}>{item.node.name}</strong>
+                            <code title={`${item.node.server}:${item.node.port}`}>{item.node.type} · {item.node.server}:{item.node.port}</code>
+                          </>
+                        ) : (
+                          <strong>{item.error ?? '无法识别节点链接'}</strong>
+                        )}
+                      </div>
+                      <span className={`node-import-status node-import-status--${item.status}`}>
+                        {formatImportStatus(item.status)}
+                      </span>
+                      {item.node && (
+                        <span className={`node-import-latency node-import-latency--${item.latency?.status ?? (item.latencyFailed ? 'failed' : 'idle')}`}>
+                          {formatImportLatency(item)}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="pool-settings-actions node-import-actions">
+                <button className="button" type="button" onClick={closeImportDialog}>关闭</button>
+                <button className="button button--primary" type="submit" disabled={!importLinks.trim() || importPhase !== 'idle'}>
+                  {importPhase !== 'idle' ? <LoaderCircle className="spin" size={16} aria-hidden="true" /> : <Link2 size={16} aria-hidden="true" />}
+                  {importPhase === 'importing' ? '正在添加' : importPhase === 'testing' ? '正在测试' : '添加并测试'}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>,
+        document.body,
+      )}
       {addTargets.length > 0 && createPortal(
         <div className="modal-backdrop">
           <section className="pool-picker" role="dialog" aria-modal="true" aria-labelledby="pool-picker-title">
@@ -427,4 +704,17 @@ function formatLatency(result: LatencyResult | undefined, isTesting: boolean) {
   if (result.status === 'ok') return result.latencyMs !== undefined ? `${result.latencyMs} ms` : '可用'
   if (result.status === 'timeout') return '超时'
   return '失败'
+}
+
+function formatImportStatus(status: ImportNodeItem['status']) {
+  if (status === 'added') return '已添加'
+  if (status === 'duplicate') return '已存在'
+  return '无效'
+}
+
+function formatImportLatency(item: ImportDisplayItem) {
+  if (item.testing) return '测试中'
+  if (item.latencyFailed) return '测试失败'
+  if (!item.latency) return '未测试'
+  return formatLatency(item.latency, false)
 }

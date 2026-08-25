@@ -171,6 +171,55 @@ func (s *Server) selectNode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, item)
 }
 
+func (s *Server) importSubscriptionNodes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "The request method is not allowed")
+		return
+	}
+	if s.subscriptions == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "subscriptions_unavailable", "Subscription storage is unavailable")
+		return
+	}
+	var input subscription.ImportNodesInput
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeError(w, r, http.StatusBadRequest, "request_invalid", err.Error())
+		return
+	}
+	result, err := s.subscriptions.ImportNodes(r.PathValue("id"), input)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) subscriptionNodeLink(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "The request method is not allowed")
+		return
+	}
+	if s.subscriptions == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "subscriptions_unavailable", "Subscription storage is unavailable")
+		return
+	}
+	result, err := s.subscriptions.NodeLink(r.PathValue("id"), r.PathValue("nodeId"))
+	if err != nil {
+		if errors.Is(err, subscription.ErrNodeNotFound) {
+			writeError(w, r, http.StatusNotFound, "node_not_found", "Node not found")
+			return
+		}
+		if errors.Is(err, subscription.ErrNotFound) {
+			writeDomainError(w, r, err)
+			return
+		}
+		writeError(w, r, http.StatusUnprocessableEntity, "node_link_unavailable", "Node link is unavailable")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) testNodeLatency(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "The request method is not allowed")

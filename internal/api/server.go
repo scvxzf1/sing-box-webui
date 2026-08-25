@@ -21,6 +21,8 @@ import (
 	"sing-box-webui/internal/events"
 	"sing-box-webui/internal/latency"
 	"sing-box-webui/internal/nodepool"
+	"sing-box-webui/internal/proxychain"
+	"sing-box-webui/internal/proxychannel"
 	"sing-box-webui/internal/routing"
 	"sing-box-webui/internal/subscription"
 	"sing-box-webui/internal/trafficpolicy"
@@ -44,6 +46,8 @@ type ServerConfig struct {
 	Events               *events.Broker
 	Subscriptions        *subscription.Manager
 	Pools                *nodepool.Manager
+	Chains               *proxychain.Manager
+	Channels             *proxychannel.Manager
 	Rules                *routing.Manager
 	DNS                  *dnsprofile.Manager
 	Latency              LatencyTester
@@ -63,6 +67,8 @@ type Server struct {
 	events        *events.Broker
 	subscriptions *subscription.Manager
 	pools         *nodepool.Manager
+	chains        *proxychain.Manager
+	channels      *proxychannel.Manager
 	rules         *routing.Manager
 	dns           *dnsprofile.Manager
 	latency       LatencyTester
@@ -98,6 +104,8 @@ func NewServer(config ServerConfig) (*Server, error) {
 		events:        config.Events,
 		subscriptions: config.Subscriptions,
 		pools:         config.Pools,
+		chains:        config.Chains,
+		channels:      config.Channels,
 		rules:         config.Rules,
 		dns:           config.DNS,
 		latency:       config.Latency,
@@ -170,10 +178,18 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/v1/subscriptions/{id}/refresh", s.refreshSubscription)
 	mux.HandleFunc("/api/v1/subscriptions/{id}/activate", s.activateSubscription)
 	mux.HandleFunc("/api/v1/subscriptions/{id}/selection", s.selectNode)
+	mux.HandleFunc("/api/v1/subscriptions/{id}/nodes/import", s.importSubscriptionNodes)
+	mux.HandleFunc("/api/v1/subscriptions/{id}/nodes/{nodeId}/link", s.subscriptionNodeLink)
 	mux.HandleFunc("/api/v1/subscriptions/{id}/latency", s.testNodeLatency)
 	mux.HandleFunc("/api/v1/pools", s.poolsCollection)
 	mux.HandleFunc("/api/v1/pools/order", s.poolsOrder)
 	mux.HandleFunc("/api/v1/pools/{id}", s.poolItem)
+	mux.HandleFunc("/api/v1/chains", s.chainsCollection)
+	mux.HandleFunc("/api/v1/chains/{id}", s.chainItem)
+	mux.HandleFunc("/api/v1/chains/{id}/latency", s.testChainLatency)
+	mux.HandleFunc("/api/v1/channels", s.channelsCollection)
+	mux.HandleFunc("/api/v1/channels/certificate", s.channelCertificate)
+	mux.HandleFunc("/api/v1/channels/{id}", s.channelItem)
 	mux.HandleFunc("/api/v1/rules", s.rulesCollection)
 	mux.HandleFunc("/api/v1/rules/order", s.rulesOrder)
 	mux.HandleFunc("/api/v1/rules/{id}", s.ruleItem)
@@ -181,6 +197,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/v1/rule-pools/order", s.rulePoolsOrder)
 	mux.HandleFunc("/api/v1/rule-pools/{id}", s.rulePoolItem)
 	mux.HandleFunc("/api/v1/runtime", s.runtimeStatus)
+	mux.HandleFunc("/api/v1/runtime/preferences", s.runtimePreferences)
 	mux.HandleFunc("/api/v1/runtime/apply", s.applyRuntime)
 	mux.HandleFunc("/api/v1/runtime/stop", s.stopRuntime)
 	mux.HandleFunc("/api/v1/links", s.links)
@@ -224,6 +241,9 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 			detail := runtime.NodeName
 			if detail == "" {
 				detail = runtime.PoolName
+			}
+			if detail == "" {
+				detail = runtime.ChainName
 			}
 			singBoxStatus = componentStatus{State: "healthy", Detail: detail}
 		} else if runtime.State == "failed" {

@@ -29,6 +29,38 @@ type ControllerOptions struct {
 	Secret  string
 }
 
+type RuntimeNodeTarget struct {
+	Tag  string
+	Node subscription.Node
+}
+
+type RuntimePoolTarget struct {
+	Tag      string
+	AutoTag  string
+	NodeTags []string
+	Options  URLTestOptions
+}
+
+type RuntimeChainTarget struct {
+	Tag     string
+	AutoTag string
+	Members []RuntimeNodeTarget
+	ExitTag string
+	Options *URLTestOptions
+}
+
+type RuntimeChannelTarget struct {
+	Tag             string
+	Protocol        string
+	Listen          string
+	Port            uint16
+	Username        string
+	Password        string
+	OutboundTag     string
+	CertificatePath string
+	KeyPath         string
+}
+
 type ProxyMode string
 
 const (
@@ -165,7 +197,7 @@ func BuildPoolConfigWithDNS(nodes []subscription.Node, mode ProxyMode, mixedPort
 		},
 		map[string]any{
 			"type": "selector", "tag": "proxy", "outbounds": append(append([]string{"auto"}, tags...), "block"),
-			"default": "auto", "interrupt_exist_connections": options.InterruptExistingConnections,
+			"default": "block", "interrupt_exist_connections": options.InterruptExistingConnections,
 		},
 		map[string]any{"type": "direct", "tag": "direct"},
 		map[string]any{"type": "block", "tag": "block"},
@@ -190,6 +222,291 @@ func BuildPoolConfigWithDNS(nodes []subscription.Node, mode ProxyMode, mixedPort
 	return json.MarshalIndent(config, "", "  ")
 }
 
+// BuildSelectableConfig compiles every currently available node and pool into
+// one runtime. Changing the root "proxy" selector can then redirect new
+// connections without restarting sing-box or disturbing established streams.
+func BuildSelectableConfig(nodes []RuntimeNodeTarget, pools []RuntimePoolTarget, chains []RuntimeChainTarget, channels []RuntimeChannelTarget, initialTargetTag string, mode ProxyMode, mixedPort uint16, routeRules []map[string]any, controller ControllerOptions, dns dnsprofile.Profile, allowLan bool) ([]byte, error) {
+	if len(nodes) == 0 {
+		return nil, fmt.Errorf("at least one runtime node is required")
+	}
+	if mode != ModeSystemProxy && mode != ModeTUN {
+		return nil, fmt.Errorf("unsupported proxy mode %q", mode)
+	}
+	if (controller.Address == "") != (controller.Secret == "") {
+		return nil, fmt.Errorf("controller address and secret must be configured together")
+	}
+	if err := validateTUNProfile(mode, dns); err != nil {
+		return nil, err
+	}
+
+	reserved := map[string]struct{}{"proxy": {}, "direct": {}, "block": {}}
+	nodeTags := make(map[string]struct{}, len(nodes))
+	nodesByTag := make(map[string]subscription.Node, len(nodes))
+	outbounds := make([]any, 0, len(nodes)+len(pools)*2+len(chains)*3+3)
+	rootTargets := make([]string, 0, len(nodes)+len(pools)+len(chains)+1)
+	rootTargetSet := make(map[string]struct{}, len(nodes)+len(pools)+len(chains))
+	for _, target := range nodes {
+		if strings.TrimSpace(target.Tag) == "" {
+			return nil, fmt.Errorf("runtime node tag is required")
+		}
+		if _, exists := reserved[target.Tag]; exists {
+			return nil, fmt.Errorf("duplicate runtime outbound tag %q", target.Tag)
+		}
+		reserved[target.Tag] = struct{}{}
+		nodeTags[target.Tag] = struct{}{}
+		nodesByTag[target.Tag] = target.Node
+		outbound, err := buildOutbound(target.Node, target.Tag)
+		if err != nil {
+			return nil, fmt.Errorf("node %q: %w", target.Node.Name, err)
+		}
+		outbounds = append(outbounds, outbound)
+		rootTargets = append(rootTargets, target.Tag)
+		rootTargetSet[target.Tag] = struct{}{}
+	}
+
+	for _, target := range pools {
+		if strings.TrimSpace(target.Tag) == "" || strings.TrimSpace(target.AutoTag) == "" {
+			return nil, fmt.Errorf("runtime pool tags are required")
+		}
+		if target.Tag == target.AutoTag {
+			return nil, fmt.Errorf("runtime pool tags must be distinct")
+		}
+		for _, tag := range []string{target.AutoTag, target.Tag} {
+			if _, exists := reserved[tag]; exists {
+				return nil, fmt.Errorf("duplicate runtime outbound tag %q", tag)
+			}
+			reserved[tag] = struct{}{}
+		}
+		if len(target.NodeTags) < 2 {
+			return nil, fmt.Errorf("runtime pool requires at least 2 available members")
+		}
+		for _, tag := range target.NodeTags {
+			if _, exists := nodeTags[tag]; !exists {
+				return nil, fmt.Errorf("runtime pool references unknown node tag %q", tag)
+			}
+		}
+		options, err := normalizeURLTestOptions(target.Options)
+		if err != nil {
+			return nil, err
+		}
+		outbounds = append(outbounds,
+			map[string]any{
+				"type": "urltest", "tag": target.AutoTag, "outbounds": target.NodeTags,
+				"url": options.URL, "interval": options.Interval.String(),
+				"tolerance": options.Tolerance, "idle_timeout": options.IdleTimeout.String(),
+				"interrupt_exist_connections": options.InterruptExistingConnections,
+			},
+			map[string]any{
+				"type": "selector", "tag": target.Tag,
+				"outbounds": append(append([]string{target.AutoTag}, target.NodeTags...), "block"),
+				"default":   "block", "interrupt_exist_connections": options.InterruptExistingConnections,
+			},
+		)
+		rootTargets = append(rootTargets, target.Tag)
+		rootTargetSet[target.Tag] = struct{}{}
+	}
+
+	for _, target := range chains {
+		if strings.TrimSpace(target.Tag) == "" || strings.TrimSpace(target.ExitTag) == "" {
+			return nil, fmt.Errorf("runtime chain tag and exit tag are required")
+		}
+		if _, exists := nodeTags[target.ExitTag]; !exists {
+			return nil, fmt.Errorf("runtime chain references unknown exit tag %q", target.ExitTag)
+		}
+		exitNode := nodesByTag[target.ExitTag]
+		if len(target.Members) == 0 {
+			return nil, fmt.Errorf("runtime chain requires at least one entry node")
+		}
+		if len(target.Members) == 1 {
+			if target.Members[0].Tag != target.Tag {
+				return nil, fmt.Errorf("single-node runtime chain tag must match its member tag")
+			}
+			if _, exists := reserved[target.Tag]; exists {
+				return nil, fmt.Errorf("duplicate runtime outbound tag %q", target.Tag)
+			}
+			reserved[target.Tag] = struct{}{}
+			entryTag := uniqueRuntimeTag(target.Tag+"-entry", reserved)
+			reserved[entryTag] = struct{}{}
+			entryOutbound, err := buildOutbound(target.Members[0].Node, entryTag)
+			if err != nil {
+				return nil, fmt.Errorf("chain entry node %q: %w", target.Members[0].Node.Name, err)
+			}
+			outbound, err := buildOutboundWithDetour(exitNode, target.Tag, entryTag)
+			if err != nil {
+				return nil, fmt.Errorf("chain exit node %q: %w", exitNode.Name, err)
+			}
+			outbounds = append(outbounds, entryOutbound, outbound)
+		} else {
+			if strings.TrimSpace(target.AutoTag) == "" || target.Tag == target.AutoTag || target.Options == nil {
+				return nil, fmt.Errorf("runtime pool chain requires distinct selector tags and URL-test options")
+			}
+			for _, tag := range []string{target.AutoTag, target.Tag} {
+				if _, exists := reserved[tag]; exists {
+					return nil, fmt.Errorf("duplicate runtime outbound tag %q", tag)
+				}
+				reserved[tag] = struct{}{}
+			}
+			memberTags := make([]string, 0, len(target.Members))
+			for _, member := range target.Members {
+				if strings.TrimSpace(member.Tag) == "" {
+					return nil, fmt.Errorf("runtime chain member tag is required")
+				}
+				if _, exists := reserved[member.Tag]; exists {
+					return nil, fmt.Errorf("duplicate runtime outbound tag %q", member.Tag)
+				}
+				reserved[member.Tag] = struct{}{}
+				entryTag := uniqueRuntimeTag(member.Tag+"-entry", reserved)
+				reserved[entryTag] = struct{}{}
+				entryOutbound, err := buildOutbound(member.Node, entryTag)
+				if err != nil {
+					return nil, fmt.Errorf("chain entry node %q: %w", member.Node.Name, err)
+				}
+				outbound, err := buildOutboundWithDetour(exitNode, member.Tag, entryTag)
+				if err != nil {
+					return nil, fmt.Errorf("chain exit node %q: %w", exitNode.Name, err)
+				}
+				outbounds = append(outbounds, entryOutbound, outbound)
+				memberTags = append(memberTags, member.Tag)
+			}
+			options, err := normalizeURLTestOptions(*target.Options)
+			if err != nil {
+				return nil, err
+			}
+			outbounds = append(outbounds,
+				map[string]any{
+					"type": "urltest", "tag": target.AutoTag, "outbounds": memberTags,
+					"url": options.URL, "interval": options.Interval.String(),
+					"tolerance": options.Tolerance, "idle_timeout": options.IdleTimeout.String(),
+					"interrupt_exist_connections": options.InterruptExistingConnections,
+				},
+				map[string]any{
+					"type": "selector", "tag": target.Tag,
+					"outbounds": append(append([]string{target.AutoTag}, memberTags...), "block"),
+					"default":   "block", "interrupt_exist_connections": options.InterruptExistingConnections,
+				},
+			)
+		}
+		rootTargets = append(rootTargets, target.Tag)
+		rootTargetSet[target.Tag] = struct{}{}
+	}
+	if _, exists := rootTargetSet[initialTargetTag]; !exists {
+		return nil, fmt.Errorf("initial runtime target is unavailable")
+	}
+	rootTargets = append(rootTargets, "block")
+	outbounds = append(outbounds,
+		map[string]any{
+			"type": "selector", "tag": "proxy", "outbounds": rootTargets,
+			"default": initialTargetTag, "interrupt_exist_connections": false,
+		},
+		map[string]any{"type": "direct", "tag": "direct"},
+		map[string]any{"type": "block", "tag": "block"},
+	)
+
+	inbounds := []any{buildInbound(mode, mixedPort, allowLan)}
+	if extra := lanInbound(mode, mixedPort, allowLan); extra != nil {
+		inbounds = append(inbounds, extra)
+	}
+	channelRules := make([]map[string]any, 0, len(channels))
+	channelTags := make(map[string]struct{}, len(channels))
+	for _, channel := range channels {
+		if strings.TrimSpace(channel.Tag) == "" || strings.TrimSpace(channel.OutboundTag) == "" {
+			return nil, fmt.Errorf("runtime channel tag and outbound tag are required")
+		}
+		if _, duplicate := channelTags[channel.Tag]; duplicate {
+			return nil, fmt.Errorf("duplicate runtime channel tag %q", channel.Tag)
+		}
+		channelTags[channel.Tag] = struct{}{}
+		if _, exists := nodeTags[channel.OutboundTag]; !exists {
+			return nil, fmt.Errorf("runtime channel references unknown outbound tag %q", channel.OutboundTag)
+		}
+		inbound, err := buildChannelInbound(channel)
+		if err != nil {
+			return nil, err
+		}
+		inbounds = append(inbounds, inbound)
+		channelRules = append(channelRules, map[string]any{
+			"inbound": []string{channel.Tag}, "action": "route", "outbound": channel.OutboundTag,
+		})
+	}
+	if len(channelRules) > 0 {
+		routeRules = append(channelRules, routeRules...)
+	}
+	config := map[string]any{
+		"log":       map[string]any{"level": "info", "timestamp": true},
+		"inbounds":  inbounds,
+		"outbounds": outbounds,
+		"route":     buildRoute(mode, routeRules, dns),
+	}
+	if mode == ModeTUN {
+		config["dns"] = buildTUNDNS(dns)
+	}
+	if controller.Address != "" {
+		config["experimental"] = clashAPIConfig(controller.Address, controller.Secret)
+	}
+	return json.MarshalIndent(config, "", "  ")
+}
+
+func buildChannelInbound(channel RuntimeChannelTarget) (map[string]any, error) {
+	if net.ParseIP(channel.Listen) == nil {
+		return nil, fmt.Errorf("runtime channel %q has invalid listen address", channel.Tag)
+	}
+	if channel.Port < 1024 {
+		return nil, fmt.Errorf("runtime channel %q has invalid listen port", channel.Tag)
+	}
+	inbound := map[string]any{
+		"tag": channel.Tag, "listen": channel.Listen, "listen_port": channel.Port,
+	}
+	switch channel.Protocol {
+	case "socks5":
+		inbound["type"] = "socks"
+	case "http", "https":
+		inbound["type"] = "http"
+	default:
+		return nil, fmt.Errorf("runtime channel %q has unsupported protocol %q", channel.Tag, channel.Protocol)
+	}
+	if (channel.Username == "") != (channel.Password == "") {
+		return nil, fmt.Errorf("runtime channel %q requires both username and password", channel.Tag)
+	}
+	if channel.Username != "" {
+		inbound["users"] = []any{map[string]any{"username": channel.Username, "password": channel.Password}}
+	}
+	if channel.Protocol == "https" {
+		if channel.CertificatePath == "" || channel.KeyPath == "" {
+			return nil, fmt.Errorf("runtime HTTPS channel %q requires a certificate and key", channel.Tag)
+		}
+		inbound["tls"] = map[string]any{
+			"enabled": true, "certificate_path": channel.CertificatePath, "key_path": channel.KeyPath,
+		}
+	}
+	return inbound, nil
+}
+
+func normalizeURLTestOptions(options URLTestOptions) (URLTestOptions, error) {
+	if options.Interval < 15*time.Second || options.Interval > time.Hour {
+		return options, fmt.Errorf("urltest interval must be between 15s and 1h")
+	}
+	if options.Tolerance < 0 || options.Tolerance > 1000 {
+		return options, fmt.Errorf("urltest tolerance must be between 0 and 1000ms")
+	}
+	if options.URL == "" {
+		options.URL = "https://cp.cloudflare.com/generate_204"
+	}
+	parsedURL, err := url.ParseRequestURI(options.URL)
+	if err != nil || parsedURL.Scheme != "https" || parsedURL.Host == "" {
+		return options, fmt.Errorf("urltest URL must be a valid HTTPS URL")
+	}
+	if options.IdleTimeout == 0 {
+		options.IdleTimeout = 30 * time.Minute
+	}
+	if options.IdleTimeout < time.Minute || options.IdleTimeout > 24*time.Hour {
+		return options, fmt.Errorf("urltest idle timeout must be between 1m and 24h")
+	}
+	if options.Interval > options.IdleTimeout {
+		return options, fmt.Errorf("urltest interval cannot exceed idle timeout")
+	}
+	return options, nil
+}
+
 func PoolMemberTag(index int) string {
 	return fmt.Sprintf("pool-member-%03d", index)
 }
@@ -205,6 +522,18 @@ func buildInbound(mode ProxyMode, mixedPort uint16, allowLan bool) map[string]an
 	return map[string]any{
 		"type": "tun", "tag": "tun-in", "interface_name": "singtun0",
 		"address": []string{DefaultTUNAddress, "fdfe:dcba:9876::1/126"}, "auto_route": true, "strict_route": true, "stack": "system",
+	}
+}
+
+func uniqueRuntimeTag(base string, reserved map[string]struct{}) string {
+	if _, exists := reserved[base]; !exists {
+		return base
+	}
+	for index := 2; ; index++ {
+		candidate := fmt.Sprintf("%s-%d", base, index)
+		if _, exists := reserved[candidate]; !exists {
+			return candidate
+		}
 	}
 }
 
@@ -248,13 +577,15 @@ func lanInbound(mode ProxyMode, mixedPort uint16, allowLan bool) map[string]any 
 
 // buildTUNDNS compiles the persisted DNS profile into a sing-box DNS section.
 // The profile is expected to have passed dnsprofile validation; the compiler
-// additionally guarantees that plain servers (udp/tcp/tls/https/quic/h3) can
-// bootstrap themselves by rewriting domain addresses onto a synthesized
-// bootstrap resolver, so a saved profile can never produce a config that
-// sing-box refuses to start.
+// additionally provides an independent direct bootstrap resolver. Encrypted
+// DNS servers and proxy outbounds may both have domain addresses; resolving
+// those through the final proxied DNS server would create a startup cycle.
 func buildTUNDNS(profile dnsprofile.Profile) map[string]any {
 	servers := make([]any, 0, len(profile.Servers)+2)
-	bootstrapTag := ""
+	bootstrapTag := bootstrapDNSTag(profile)
+	servers = append(servers, map[string]any{
+		"type": "udp", "tag": bootstrapTag, "server": "223.5.5.5",
+	})
 	for _, server := range profile.Servers {
 		compiled := map[string]any{"type": server.Type, "tag": server.Tag}
 		switch server.Type {
@@ -262,25 +593,23 @@ func buildTUNDNS(profile dnsprofile.Profile) map[string]any {
 			// no address fields
 		default:
 			if !isIPLiteral(server.Server) {
-				if bootstrapTag == "" {
-					bootstrapTag = uniqueDNSTag(profile, "dns-bootstrap")
-					servers = append(servers, map[string]any{
-						"type": "udp", "tag": bootstrapTag, "server": "223.5.5.5",
-					})
-				}
 				compiled["domain_resolver"] = map[string]any{"server": bootstrapTag}
 			}
 			compiled["server"] = server.Server
 			if server.Port != nil {
 				compiled["server_port"] = *server.Port
 			}
+			if server.Detour != "" {
+				compiled["detour"] = server.Detour
+			} else if server.Type == "https" || server.Type == "tls" || server.Type == "quic" || server.Type == "h3" {
+				// DoH/DoT/DoQ 默认走代理，避免国内 DNS 污染（阿里 1.12.12.12 返回 104.244.42.197 / 185.45.5.35 / 2001::1）
+				compiled["detour"] = "proxy"
+			}
 		}
 		servers = append(servers, compiled)
 	}
 
-	final := profile.Final
 	if profile.FakeIP.Enabled {
-		final = profile.FakeIPResponderTag()
 		servers = append(servers, map[string]any{
 			"type":        "fakeip",
 			"tag":         profile.FakeIPResponderTag(),
@@ -290,7 +619,7 @@ func buildTUNDNS(profile dnsprofile.Profile) map[string]any {
 	}
 	result := map[string]any{
 		"servers":  servers,
-		"final":    final,
+		"final":    profile.Final,
 		"strategy": profile.Strategy,
 		// Record the IP→domain mapping of every hijacked answer so IP-only
 		// TUN connections can still be labelled with their domain in the
@@ -321,9 +650,9 @@ func buildRoute(mode ProxyMode, routeRules []map[string]any, dns dnsprofile.Prof
 		"rules":                 rules,
 	}
 	if mode == ModeTUN {
-		// Outbound dials resolve their server domains through this resolver;
-		// without it sing-box 1.13 rejects TUN configs that define DNS servers.
-		route["default_domain_resolver"] = map[string]any{"server": dns.Final}
+		// Resolve proxy server addresses independently from proxied user DNS.
+		// Using dns.Final here can deadlock when that server detours via proxy.
+		route["default_domain_resolver"] = map[string]any{"server": bootstrapDNSTag(dns)}
 	}
 	return route
 }
@@ -347,11 +676,19 @@ func uniqueDNSTag(profile dnsprofile.Profile, base string) string {
 	}
 }
 
+func bootstrapDNSTag(profile dnsprofile.Profile) string {
+	return uniqueDNSTag(profile, "dns-bootstrap")
+}
+
 func isIPLiteral(value string) bool {
 	return net.ParseIP(strings.TrimSuffix(value, ".")) != nil
 }
 
 func buildOutbound(node subscription.Node, tag string) (map[string]any, error) {
+	return buildOutboundWithDetour(node, tag, "")
+}
+
+func buildOutboundWithDetour(node subscription.Node, tag, detour string) (map[string]any, error) {
 	if err := subscription.ValidateNode(node); err != nil {
 		return nil, err
 	}
@@ -360,6 +697,9 @@ func buildOutbound(node subscription.Node, tag string) (map[string]any, error) {
 		"tag":         tag,
 		"server":      node.Server,
 		"server_port": node.Port,
+	}
+	if detour != "" {
+		outbound["detour"] = detour
 	}
 	switch node.Type {
 	case "shadowsocks":
@@ -404,10 +744,10 @@ func buildOutbound(node subscription.Node, tag string) (map[string]any, error) {
 		if len(node.TLS.ALPN) > 0 {
 			tlsConfig["alpn"] = node.TLS.ALPN
 		}
-		if node.TLS.UTLSFingerprint != "" {
+		if node.TLS.UTLSFingerprint != "" || node.TLS.Reality.Enabled {
 			tlsConfig["utls"] = map[string]any{
 				"enabled":     true,
-				"fingerprint": node.TLS.UTLSFingerprint,
+				"fingerprint": firstNonEmpty(node.TLS.UTLSFingerprint, "chrome"),
 			}
 		}
 		if node.TLS.Reality.Enabled {
@@ -473,6 +813,53 @@ func BuildLatencyConfig(nodes []subscription.Node, listenAddresses []string) ([]
 	content, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return nil, nil, fmt.Errorf("encode latency config: %w", err)
+	}
+	return content, tags, nil
+}
+
+// BuildChainLatencyConfig gives each entry node a private loopback inbound and
+// routes the final exit outbound through that entry node. This preserves the
+// user-facing order of entry -> exit and makes the exit node the public egress.
+func BuildChainLatencyConfig(entries []subscription.Node, exit subscription.Node, listenAddresses []string) ([]byte, []string, error) {
+	if len(entries) != len(listenAddresses) {
+		return nil, nil, fmt.Errorf("chain latency entries and listen addresses must have equal length")
+	}
+	outbounds := make([]any, 0, len(entries)*2)
+	inbounds := make([]any, 0, len(entries))
+	rules := make([]any, 0, len(entries))
+	tags := make([]string, 0, len(entries))
+	for index, entry := range entries {
+		entryTag := fmt.Sprintf("chain-probe-entry-%03d", index)
+		tag := fmt.Sprintf("chain-probe-%03d", index)
+		entryOutbound, buildErr := buildOutbound(entry, entryTag)
+		if buildErr != nil {
+			return nil, nil, fmt.Errorf("chain entry node %q: %w", entry.Name, buildErr)
+		}
+		outbound, buildErr := buildOutboundWithDetour(exit, tag, entryTag)
+		if buildErr != nil {
+			return nil, nil, fmt.Errorf("chain exit node %q: %w", exit.Name, buildErr)
+		}
+		outbounds = append(outbounds, entryOutbound, outbound)
+		tags = append(tags, tag)
+		host, portText, splitErr := net.SplitHostPort(listenAddresses[index])
+		if splitErr != nil {
+			return nil, nil, fmt.Errorf("parse chain latency listen address: %w", splitErr)
+		}
+		port, convertErr := strconv.Atoi(portText)
+		if convertErr != nil {
+			return nil, nil, fmt.Errorf("parse chain latency listen port: %w", convertErr)
+		}
+		inboundTag := fmt.Sprintf("chain-probe-in-%03d", index)
+		inbounds = append(inbounds, map[string]any{"type": "mixed", "tag": inboundTag, "listen": host, "listen_port": port})
+		rules = append(rules, map[string]any{"inbound": []string{inboundTag}, "action": "route", "outbound": tag})
+	}
+	config := map[string]any{
+		"log": map[string]any{"level": "error", "timestamp": true}, "inbounds": inbounds,
+		"outbounds": outbounds, "route": map[string]any{"rules": rules},
+	}
+	content, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode chain latency config: %w", err)
 	}
 	return content, tags, nil
 }

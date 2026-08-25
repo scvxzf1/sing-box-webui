@@ -20,7 +20,7 @@ const (
 	StatusDegraded    = "degraded"
 	StatusQuarantined = "quarantined"
 	StatusOutage      = "outage"
-	maxConcurrent     = 4
+	maxConcurrent     = 48
 	probeTimeout      = 6 * time.Second
 	probeRoundTimeout = 30 * time.Second
 	fastRetry         = time.Second
@@ -37,6 +37,7 @@ type Target struct {
 type Config struct {
 	Address              string
 	Secret               string
+	SelectorTag          string
 	ProbeURLs            []string
 	Interval             time.Duration
 	Tolerance            time.Duration
@@ -54,6 +55,8 @@ type MemberSnapshot struct {
 	Name           string    `json:"name"`
 	Status         string    `json:"status"`
 	LatencyMS      int64     `json:"latencyMs,omitempty"`
+	PassedTests    int       `json:"passedTests"`
+	TotalTests     int       `json:"totalTests"`
 	Failures       int       `json:"failures"`
 	LastCheckedAt  time.Time `json:"lastCheckedAt,omitempty"`
 	NextProbeAt    time.Time `json:"nextProbeAt,omitempty"`
@@ -79,6 +82,8 @@ type memberState struct {
 	target            Target
 	status            string
 	latencyMS         int64
+	passedTests       int
+	totalTests        int
 	failures          int
 	recoverySuccesses int
 	lastCheckedAt     time.Time
@@ -109,13 +114,20 @@ func NewManager() *Manager {
 }
 
 func (m *Manager) Start(config Config) error {
+	return m.StartContext(context.Background(), config)
+}
+
+// StartContext starts monitoring after the controller is ready and the first
+// complete probe round has selected an outbound. Later rounds run in the
+// background, but callers never observe a pool startup with selection pending.
+func (m *Manager) StartContext(ctx context.Context, config Config) error {
 	if err := validateConfig(config); err != nil {
 		return err
 	}
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
 	m.stopLocked()
-	ctx, cancel := context.WithCancel(context.Background())
+	lifecycleCtx, cancel := context.WithCancel(context.Background())
 	members := make(map[string]*memberState, len(config.Targets))
 	now := time.Now().UTC()
 	for _, target := range config.Targets {
@@ -134,7 +146,27 @@ func (m *Manager) Start(config Config) error {
 	m.updateSnapshotLocked("", time.Time{})
 	done := m.done
 	m.mu.Unlock()
-	go m.run(ctx, done)
+
+	readyCtx, readyCancel := context.WithTimeout(ctx, 5*time.Second)
+	err := m.waitReady(readyCtx)
+	readyCancel()
+	if err == nil {
+		targets := make([]Target, 0, len(config.Targets))
+		for _, target := range config.Targets {
+			targets = append(targets, target)
+		}
+		err = m.checkTargets(ctx, targets)
+	}
+	if err != nil {
+		cancel()
+		m.setError(err)
+		m.mu.Lock()
+		m.cancel, m.done = nil, nil
+		m.mu.Unlock()
+		close(done)
+		return err
+	}
+	go m.run(lifecycleCtx, done)
 	return nil
 }
 
@@ -167,12 +199,6 @@ func (m *Manager) Snapshot() Snapshot {
 
 func (m *Manager) run(ctx context.Context, done chan struct{}) {
 	defer close(done)
-	readyCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if err := m.waitReady(readyCtx); err != nil {
-		m.setError(err)
-		return
-	}
 	for {
 		if m.refreshActivity(ctx) {
 			m.checkDormantDue(ctx)
@@ -190,6 +216,7 @@ func (m *Manager) run(ctx context.Context, done chan struct{}) {
 func (m *Manager) refreshActivity(ctx context.Context) bool {
 	m.mu.RLock()
 	client := m.client
+	selector := selectorTag(m.config)
 	m.mu.RUnlock()
 	traffic, err := client.traffic(ctx)
 	if err != nil {
@@ -217,7 +244,7 @@ func (m *Manager) refreshActivity(ctx context.Context) bool {
 	idle := m.idle
 	m.mu.Unlock()
 	if enteringIdle {
-		if err := client.selectOutbound(ctx, "auto"); err != nil {
+		if err := client.selectOutbound(ctx, selector, "auto"); err != nil {
 			m.setError(fmt.Errorf("return selector to auto while idle: %w", err))
 		} else {
 			m.mu.Lock()
@@ -274,7 +301,7 @@ func (m *Manager) checkDue(ctx context.Context) {
 		}
 	}
 	m.mu.RUnlock()
-	m.checkTargets(ctx, due)
+	_ = m.checkTargets(ctx, due)
 }
 
 func (m *Manager) checkDormantDue(ctx context.Context) {
@@ -290,46 +317,29 @@ func (m *Manager) checkDormantDue(ctx context.Context) {
 	}
 	m.dormantProbeAt = now.Add(m.config.MaxBackoff)
 	m.mu.Unlock()
-	m.checkTargets(ctx, targets)
+	_ = m.checkTargets(ctx, targets)
 }
 
-func (m *Manager) checkTargets(ctx context.Context, targets []Target) {
+func (m *Manager) checkTargets(ctx context.Context, targets []Target) error {
 	if len(targets) == 0 {
-		return
+		return nil
 	}
 	m.mu.RLock()
 	client, probeURLs := m.client, append([]string(nil), m.config.ProbeURLs...)
+	selector := selectorTag(m.config)
 	m.mu.RUnlock()
 	roundCtx, cancel := context.WithTimeout(ctx, probeRoundTimeout)
 	defer cancel()
 
-	results := make(chan probeResult, len(targets))
-	semaphore := make(chan struct{}, maxConcurrent)
-	var wait sync.WaitGroup
-	for _, target := range targets {
-		target := target
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			select {
-			case semaphore <- struct{}{}:
-				defer func() { <-semaphore }()
-			case <-roundCtx.Done():
-				return
-			}
-			result := probeTarget(roundCtx, client, target.Tag, probeURLs)
-			select {
-			case results <- result:
-			case <-roundCtx.Done():
-			}
-		}()
+	results, err := probeTargets(roundCtx, client, targets, probeURLs)
+	if err != nil {
+		m.setError(err)
+		return err
 	}
-	wait.Wait()
-	close(results)
 
 	m.mu.Lock()
 	checkedAt := time.Now().UTC()
-	for result := range results {
+	for _, result := range results {
 		if member := m.members[result.tag]; member != nil {
 			m.applyResultLocked(member, result, checkedAt)
 		}
@@ -341,35 +351,91 @@ func (m *Manager) checkTargets(ctx context.Context, targets []Target) {
 	m.mu.Unlock()
 
 	if selection != "" {
-		if err := client.selectOutbound(roundCtx, selection); err != nil {
+		if err := client.selectOutbound(roundCtx, selector, selection); err != nil {
 			m.setError(err)
-			return
+			return err
 		}
 	}
 	m.mu.Lock()
 	m.selected = selection
 	m.updateSnapshotLocked("", checkedAt)
 	m.mu.Unlock()
+	return nil
 }
 
-func probeTarget(ctx context.Context, client *apiClient, tag string, probeURLs []string) probeResult {
-	result := probeResult{tag: tag, total: len(probeURLs)}
-	var totalDelay int64
-	for _, probeURL := range probeURLs {
-		delay, err := client.delay(ctx, tag, probeURL, probeTimeout)
-		if err == nil {
-			result.successes++
-			totalDelay += delay
+func probeTargets(ctx context.Context, client *apiClient, targets []Target, probeURLs []string) ([]probeResult, error) {
+	type job struct{ tag, url string }
+	type outcome struct {
+		tag   string
+		delay int64
+		ok    bool
+	}
+	jobs := make(chan job)
+	outcomes := make(chan outcome)
+	workerCount := min(maxConcurrent, len(targets)*len(probeURLs))
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer workers.Done()
+			for item := range jobs {
+				delay, err := client.delay(ctx, item.tag, item.url, probeTimeout)
+				select {
+				case outcomes <- outcome{tag: item.tag, delay: delay, ok: err == nil}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for _, target := range targets {
+			for _, probeURL := range probeURLs {
+				select {
+				case jobs <- job{tag: target.Tag, url: probeURL}:
+				case <-ctx.Done():
+					return
+				}
+			}
 		}
+	}()
+	go func() {
+		workers.Wait()
+		close(outcomes)
+	}()
+
+	byTag := make(map[string]*probeResult, len(targets))
+	delayTotals := make(map[string]int64, len(targets))
+	for _, target := range targets {
+		byTag[target.Tag] = &probeResult{tag: target.Tag, total: len(probeURLs)}
 	}
-	if result.successes > 0 {
-		result.latencyMS = totalDelay / int64(result.successes)
+	for item := range outcomes {
+		if !item.ok {
+			continue
+		}
+		result := byTag[item.tag]
+		result.successes++
+		delayTotals[item.tag] += item.delay
 	}
-	return result
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("health probe round incomplete: %w", err)
+	}
+	results := make([]probeResult, 0, len(targets))
+	for _, target := range targets {
+		result := byTag[target.Tag]
+		if result.successes > 0 {
+			result.latencyMS = delayTotals[target.Tag] / int64(result.successes)
+		}
+		results = append(results, *result)
+	}
+	return results, nil
 }
 
 func (m *Manager) applyResultLocked(member *memberState, result probeResult, now time.Time) {
 	member.lastCheckedAt = now
+	member.passedTests = result.successes
+	member.totalTests = result.total
 	if result.successes == 0 {
 		member.failures++
 		member.recoverySuccesses = 0
@@ -405,7 +471,8 @@ func (m *Manager) applyResultLocked(member *memberState, result probeResult, now
 func (m *Manager) bestSelectionLocked() string {
 	candidates := make([]*memberState, 0, len(m.members))
 	for _, member := range m.members {
-		if member.status == StatusHealthy || member.status == StatusDegraded {
+		eligibleStatus := member.status == StatusHealthy || member.status == StatusDegraded
+		if eligibleStatus && (member.totalTests == 0 || member.passedTests > 0) {
 			candidates = append(candidates, member)
 		}
 	}
@@ -415,6 +482,9 @@ func (m *Manager) bestSelectionLocked() string {
 	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].status != candidates[j].status {
 			return candidates[i].status == StatusHealthy
+		}
+		if candidates[i].passedTests != candidates[j].passedTests {
+			return candidates[i].passedTests > candidates[j].passedTests
 		}
 		left, right := effectiveLatency(candidates[i]), effectiveLatency(candidates[j])
 		if left != right {
@@ -428,6 +498,9 @@ func (m *Manager) bestSelectionLocked() string {
 		return best.target.Tag
 	}
 	if current.status != best.status {
+		return best.target.Tag
+	}
+	if current.passedTests != best.passedTests {
 		return best.target.Tag
 	}
 	currentLatency, bestLatency := effectiveLatency(current), effectiveLatency(best)
@@ -452,7 +525,8 @@ func (m *Manager) updateSnapshotLocked(lastError string, checkedAt time.Time) {
 	for _, member := range m.members {
 		item := MemberSnapshot{
 			SubscriptionID: member.target.SubscriptionID, NodeID: member.target.NodeID, Name: member.target.Name,
-			Status: member.status, LatencyMS: member.latencyMS, Failures: member.failures,
+			Status: member.status, LatencyMS: member.latencyMS, PassedTests: member.passedTests,
+			TotalTests: member.totalTests, Failures: member.failures,
 			LastCheckedAt: member.lastCheckedAt, NextProbeAt: member.nextProbeAt,
 		}
 		if member.target.Tag == m.selected {
@@ -563,11 +637,27 @@ func (c *apiClient) delay(ctx context.Context, tag, targetURL string, timeout ti
 	return response.Delay, nil
 }
 
-func (c *apiClient) selectOutbound(ctx context.Context, tag string) error {
-	body, _ := json.Marshal(map[string]string{"name": tag})
-	request, _ := http.NewRequestWithContext(ctx, http.MethodPut, c.baseURL+"/proxies/proxy", bytes.NewReader(body))
+func (c *apiClient) selectOutbound(ctx context.Context, selector, outbound string) error {
+	body, _ := json.Marshal(map[string]string{"name": outbound})
+	request, _ := http.NewRequestWithContext(ctx, http.MethodPut, c.baseURL+"/proxies/"+url.PathEscape(selector), bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	return c.do(request, nil)
+}
+
+// SelectOutbound changes one known selector through the loopback-only Clash
+// API. Callers retain ownership of which selector and outbound tags are valid.
+func SelectOutbound(ctx context.Context, address, secret, selector, outbound string) error {
+	if strings.TrimSpace(address) == "" || strings.TrimSpace(secret) == "" || strings.TrimSpace(selector) == "" || strings.TrimSpace(outbound) == "" {
+		return fmt.Errorf("controller address, secret, selector, and outbound are required")
+	}
+	return newAPIClient(address, secret).selectOutbound(ctx, selector, outbound)
+}
+
+func selectorTag(config Config) string {
+	if strings.TrimSpace(config.SelectorTag) == "" {
+		return "proxy"
+	}
+	return config.SelectorTag
 }
 
 func (c *apiClient) do(request *http.Request, output any) error {

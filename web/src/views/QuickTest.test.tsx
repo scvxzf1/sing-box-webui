@@ -43,4 +43,19 @@ describe('QuickTest', () => {
     rendered.unmount()
     await waitFor(() => expect(requestSignal?.aborted).toBe(true))
   })
+
+  it('labels the direct measurement as the TUN chain when TUN is active', async () => {
+    api.testConnectivity.mockResolvedValue({
+      items: [{
+        targetId: 'target-1', name: 'Example', url: 'https://example.com',
+        direct: { status: 'ok', latencyMs: 42 },
+      }],
+    })
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><QuickTest step={1} mode="tun" /></QueryClientProvider>)
+
+    await user.click(await screen.findByRole('button', { name: '测试 Example' }))
+    expect(await screen.findByText('TUN链路 42 ms')).toBeInTheDocument()
+  })
 })

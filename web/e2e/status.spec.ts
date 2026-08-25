@@ -6,7 +6,7 @@ test('shows the local control-plane status', async ({ page }) => {
   await expect(page).toHaveTitle('sing-box WebUI · 本机代理控制面')
   await expect(page.getByRole('heading', { name: '运行概览' })).toBeVisible()
   await expect(page.getByText('Web API')).toBeVisible()
-  await expect(page.getByText('127.0.0.1:11872').first()).toBeVisible()
+  await expect(page.getByText('127.0.0.1:33334').first()).toBeVisible()
 })
 
 test('switches and persists the dark theme without narrow-screen overflow', async ({ page }) => {
@@ -341,8 +341,8 @@ test('persists the node grid and tests node latency', async ({ page }) => {
   releaseManualTests()
   await expect(page.getByText('38 ms')).toBeVisible()
   await expect(page.getByText('超时')).toBeVisible()
-  await page.getByRole('checkbox', { name: '批量选择 Tokyo' }).check()
-  await page.getByRole('checkbox', { name: '批量选择 London' }).check()
+  await page.getByRole('button', { name: '批量选择 Tokyo' }).click()
+  await page.getByRole('button', { name: '批量选择 London' }).click()
   await page.getByRole('button', { name: '加入节点池 (2)' }).click()
   await page.locator('.pool-picker-row').click()
   expect(poolUpdate?.members).toEqual([
@@ -352,7 +352,9 @@ test('persists the node grid and tests node latency', async ({ page }) => {
   await page.getByLabel('每行列数').selectOption('4')
   await expect(page.getByLabel('每行列数')).toHaveValue('4')
 
-  await page.getByRole('button', { name: '测试全部' }).click()
+  await page.getByRole('button', { name: '批量选择 Tokyo' }).click()
+  await page.getByRole('button', { name: '批量选择 London' }).click()
+  await page.getByRole('button', { name: /^测试所选/ }).click()
   await expect(page.getByText('38 ms')).toBeVisible()
   await expect(page.getByText('超时')).toBeVisible()
 

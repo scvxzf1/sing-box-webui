@@ -242,6 +242,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/subscriptions/{id}/nodes/import": {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["SubscriptionID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["importSubscriptionNodes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/subscriptions/{id}/nodes/{nodeId}/link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["SubscriptionID"];
+                nodeId: string;
+            };
+            cookie?: never;
+        };
+        get: operations["getSubscriptionNodeLink"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/subscriptions/{id}/latency": {
         parameters: {
             query?: never;
@@ -312,6 +351,108 @@ export interface paths {
         patch: operations["updateNodePool"];
         trace?: never;
     };
+    "/api/v1/chains": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listProxyChains"];
+        put?: never;
+        post: operations["createProxyChain"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/chains/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get: operations["getProxyChain"];
+        put?: never;
+        post?: never;
+        delete: operations["deleteProxyChain"];
+        options?: never;
+        head?: never;
+        patch: operations["updateProxyChain"];
+        trace?: never;
+    };
+    "/api/v1/chains/{id}/latency": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["testProxyChainLatency"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listProxyChannels"];
+        put?: never;
+        post: operations["createProxyChannel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/channels/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get: operations["getProxyChannel"];
+        put?: never;
+        post?: never;
+        delete: operations["deleteProxyChannel"];
+        options?: never;
+        head?: never;
+        patch: operations["updateProxyChannel"];
+        trace?: never;
+    };
+    "/api/v1/channels/certificate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["downloadProxyChannelCertificate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/runtime": {
         parameters: {
             query?: never;
@@ -321,6 +462,22 @@ export interface paths {
         };
         get: operations["getRuntime"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/runtime/preferences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["updateRuntimePreferences"];
         post?: never;
         delete?: never;
         options?: never;
@@ -711,6 +868,15 @@ export interface components {
             tls: boolean;
             selected: boolean;
         };
+        NodeLink: {
+            /** @description Credential-bearing proxy URI. Must not be cached or included in list responses. */
+            link: string;
+            /**
+             * @description Whether the URI was preserved from the source or generated from the current node configuration.
+             * @enum {string}
+             */
+            source: "original" | "generated";
+        };
         Subscription: {
             id: string;
             name: string;
@@ -744,6 +910,23 @@ export interface components {
         };
         SubscriptionOrder: {
             ids: string[];
+        };
+        ImportNodesInput: {
+            links: string;
+        };
+        ImportNodeItem: {
+            line: number;
+            /** @enum {string} */
+            status: "added" | "duplicate" | "invalid";
+            error?: string;
+            node?: components["schemas"]["Node"];
+        };
+        ImportNodesResponse: {
+            addedCount: number;
+            duplicateCount: number;
+            invalidCount: number;
+            items: components["schemas"]["ImportNodeItem"][];
+            subscription: components["schemas"]["Subscription"];
         };
         LatencyRequest: {
             nodeIds?: string[];
@@ -819,6 +1002,8 @@ export interface components {
         LatencyResult: {
             nodeId: string;
             name: string;
+            /** @description Ordered nodes traversed by a chain test, from entry to exit. */
+            path?: string[];
             /** @enum {string} */
             status: "ok" | "timeout" | "failed";
             latencyMs?: number;
@@ -896,6 +1081,87 @@ export interface components {
             maxBackoffSeconds?: number;
             interruptExistingConnections?: boolean;
         };
+        ProxyChain: {
+            id: string;
+            name: string;
+            /** @enum {string} */
+            entryType: "node" | "pool";
+            entryNode?: components["schemas"]["NodePoolMemberRef"];
+            entryPoolId?: string;
+            exitNode: components["schemas"]["NodePoolMemberRef"];
+            entryName?: string;
+            entryMemberCount?: number;
+            exitName?: string;
+            available: boolean;
+            unavailableReason?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        CreateProxyChain: {
+            name: string;
+            /** @enum {string} */
+            entryType: "node" | "pool";
+            entryNode?: components["schemas"]["NodePoolMemberRef"];
+            entryPoolId?: string;
+            exitNode: components["schemas"]["NodePoolMemberRef"];
+        } & (unknown | unknown);
+        UpdateProxyChain: {
+            name?: string;
+            /** @enum {string} */
+            entryType?: "node" | "pool";
+            entryNode?: components["schemas"]["NodePoolMemberRef"];
+            entryPoolId?: string;
+            exitNode?: components["schemas"]["NodePoolMemberRef"];
+        };
+        ProxyChannel: {
+            id: string;
+            name: string;
+            /** @enum {string} */
+            protocol: "socks5" | "http" | "https";
+            /** @enum {string} */
+            direction: "forward" | "reverse";
+            port: number;
+            username?: string;
+            password?: string;
+            node: components["schemas"]["NodePoolMemberRef"];
+            enabled: boolean;
+            nodeName?: string;
+            listenAddress: string;
+            /** @description Reachable host addresses for client applications; shared channels expose routed LAN addresses instead of the wildcard listener. */
+            accessAddresses: string[];
+            available: boolean;
+            unavailableReason?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        CreateProxyChannel: {
+            name: string;
+            /** @enum {string} */
+            protocol: "socks5" | "http" | "https";
+            /** @enum {string} */
+            direction: "forward" | "reverse";
+            port: number;
+            username?: string;
+            password?: string;
+            node: components["schemas"]["NodePoolMemberRef"];
+            enabled: boolean;
+        };
+        UpdateProxyChannel: {
+            name?: string;
+            /** @enum {string} */
+            protocol?: "socks5" | "http" | "https";
+            /** @enum {string} */
+            direction?: "forward" | "reverse";
+            port?: number;
+            username?: string;
+            password?: string;
+            node?: components["schemas"]["NodePoolMemberRef"];
+            enabled?: boolean;
+        };
         Capability: {
             available: boolean;
             detail: string;
@@ -912,6 +1178,8 @@ export interface components {
             /** @enum {string} */
             status: "unknown" | "healthy" | "degraded" | "quarantined";
             latencyMs?: number;
+            passedTests: number;
+            totalTests: number;
             failures: number;
             /** Format: date-time */
             lastCheckedAt?: string;
@@ -1020,12 +1288,18 @@ export interface components {
             /** @enum {string} */
             mode?: "system-proxy" | "tun";
             /** @enum {string} */
-            targetType?: "node" | "pool";
+            targetType?: "node" | "pool" | "chain";
             subscriptionId?: string;
             nodeId?: string;
             nodeName?: string;
             poolId?: string;
             poolName?: string;
+            chainId?: string;
+            chainName?: string;
+            /** @enum {string} */
+            chainEntryType?: "node" | "pool";
+            chainEntryName?: string;
+            chainExitName?: string;
             /** @description Whether LAN devices may route through this proxy. */
             allowLan?: boolean;
             /** Format: date-time */
@@ -1094,6 +1368,7 @@ export interface components {
             subscriptionId?: string;
             nodeId?: string;
             poolId?: string;
+            chainId?: string;
             /** @enum {string} */
             mode: "system-proxy" | "tun";
             /**
@@ -1101,7 +1376,11 @@ export interface components {
              * @default false
              */
             allowLan: boolean;
-        } & (unknown | unknown);
+        } & (unknown | unknown | unknown);
+        UpdateRuntimePreferences: {
+            /** @description Persist LAN access for future proxy starts. */
+            allowLan: boolean;
+        };
         CoreInfo: {
             /** @enum {string} */
             source: "managed" | "external";
@@ -1606,6 +1885,61 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    importSubscriptionNodes: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["SubscriptionID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportNodesInput"];
+            };
+        };
+        responses: {
+            /** @description Per-line import results and the updated subscription. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportNodesResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getSubscriptionNodeLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["SubscriptionID"];
+                nodeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Credential-bearing node URI, returned only on explicit request and never cached. */
+            200: {
+                headers: {
+                    /** @description Always `no-store`. */
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeLink"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     testNodeLatency: {
         parameters: {
             query?: never;
@@ -1789,6 +2123,302 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    listProxyChains: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stored proxy chains with resolved entry and exit status. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["ProxyChain"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createProxyChain: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateProxyChain"];
+            };
+        };
+        responses: {
+            /** @description Proxy chain created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProxyChain"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getProxyChain: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Proxy chain details. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProxyChain"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteProxyChain: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Proxy chain deleted. A running chain must be switched away first. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    updateProxyChain: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateProxyChain"];
+            };
+        };
+        responses: {
+            /** @description Proxy chain updated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProxyChain"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    testProxyChainLatency: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description End-to-end latency for each entry path through the configured exit node. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LatencyResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listProxyChannels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stored proxy channels with resolved node status. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["ProxyChannel"][];
+                    };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createProxyChannel: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateProxyChannel"];
+            };
+        };
+        responses: {
+            /** @description Proxy channel created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProxyChannel"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getProxyChannel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Proxy channel details. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProxyChannel"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteProxyChannel: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Proxy channel deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    updateProxyChannel: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateProxyChannel"];
+            };
+        };
+        responses: {
+            /** @description Proxy channel updated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProxyChannel"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    downloadProxyChannelCertificate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Self-signed CA certificate used by HTTPS proxy channels. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/x-pem-file": string;
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     getRuntime: {
         parameters: {
             query?: never;
@@ -1799,6 +2429,33 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Current proxy runtime and capabilities. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Runtime"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    updateRuntimePreferences: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateRuntimePreferences"];
+            };
+        };
+        responses: {
+            /** @description Persisted runtime preferences and current runtime state. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2142,7 +2799,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Selected node or node pool and proxy mode applied. */
+            /** @description Selected node or node pool applied. A running compatible runtime switches its root selector without restarting. */
             200: {
                 headers: {
                     [name: string]: unknown;

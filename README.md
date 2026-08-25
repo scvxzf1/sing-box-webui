@@ -25,6 +25,7 @@
 - [架构决策索引](docs/adr/README.md)
 - [核心管理与更新](docs/core-management.md)
 - [Web 鉴权配置与运维](docs/web-authentication.md)
+- [开机自启动](docs/autostart.md)
 - [已归档：技术规格 v0.1](docs/archive/spec-v0.1.md)（仅供历史查阅，不作为开发依据）
 
 ## 源码启动
@@ -36,8 +37,8 @@ npm --prefix web install
 ./scripts/dev.sh
 ```
 
-然后访问 `http://127.0.0.1:5173`。Go API 默认监听
-`http://127.0.0.1:11872`，两个开发服务都拒绝监听非回环地址。
+然后访问 `http://127.0.0.1:33333`。Go API 默认监听
+`http://127.0.0.1:33334`，两个开发服务都拒绝监听非回环地址。
 
 也可以分别启动：
 

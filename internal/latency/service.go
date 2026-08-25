@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"sing-box-webui/internal/netsafety"
+	"sing-box-webui/internal/proxychain"
 	"sing-box-webui/internal/singbox"
 	"sing-box-webui/internal/subscription"
 )
@@ -47,11 +48,12 @@ const (
 )
 
 type Result struct {
-	NodeID    string `json:"nodeId"`
-	Name      string `json:"name"`
-	Status    Status `json:"status"`
-	LatencyMS *int64 `json:"latencyMs,omitempty"`
-	Detail    string `json:"detail,omitempty"`
+	NodeID    string   `json:"nodeId"`
+	Name      string   `json:"name"`
+	Path      []string `json:"path,omitempty"`
+	Status    Status   `json:"status"`
+	LatencyMS *int64   `json:"latencyMs,omitempty"`
+	Detail    string   `json:"detail,omitempty"`
 }
 
 type Response struct {
@@ -107,6 +109,40 @@ func (s *Service) Test(ctx context.Context, subscriptionID string, nodeIDs []str
 	return Response{Items: results}, nil
 }
 
+func (s *Service) TestChain(ctx context.Context, chain proxychain.Resolved) (Response, error) {
+	if s == nil || s.runner == nil {
+		return Response{}, ErrUnavailable
+	}
+	s.slotsOnce.Do(func() { s.slots = make(chan struct{}, MaxConcurrentTests) })
+	select {
+	case s.slots <- struct{}{}:
+		defer func() { <-s.slots }()
+	default:
+		return Response{}, ErrBusy
+	}
+	entries := chain.EntryNodes
+	if chain.EntryNode != nil {
+		entries = []subscription.Node{*chain.EntryNode}
+	}
+	runner, ok := s.runner.(interface {
+		TestChain(context.Context, []subscription.Node, subscription.Node) ([]Result, error)
+	})
+	if !ok {
+		return Response{}, ErrUnavailable
+	}
+	results, err := runner.TestChain(ctx, entries, chain.ExitNode)
+	if err != nil {
+		return Response{}, err
+	}
+	for index := range results {
+		if index >= len(entries) {
+			break
+		}
+		results[index].Path = []string{entries[index].Name, chain.ExitNode.Name}
+	}
+	return Response{Items: results}, nil
+}
+
 type singBoxRunner struct {
 	client        *singbox.Client
 	workDirectory string
@@ -118,6 +154,42 @@ func (r *singBoxRunner) Test(ctx context.Context, nodes []subscription.Node) ([]
 		return results, nil
 	}
 
+	return r.testPrepared(ctx, results, prepared, indexes, func(proxyAddresses []string) ([]byte, error) {
+		content, _, err := singbox.BuildLatencyConfig(prepared, proxyAddresses)
+		return content, err
+	})
+}
+
+func (r *singBoxRunner) TestChain(ctx context.Context, entries []subscription.Node, exit subscription.Node) ([]Result, error) {
+	results, prepared, indexes := prepareNodes(ctx, entries)
+	if len(prepared) == 0 {
+		return results, nil
+	}
+	resolvedExit, exitResult, ok := resolvePublicNode(ctx, exit)
+	if !ok {
+		detail := "出口节点不可用"
+		if exitResult.Detail != "" {
+			detail += "：" + exitResult.Detail
+		}
+		for index := range results {
+			results[index] = Result{NodeID: entries[index].ID, Name: entries[index].Name, Path: []string{entries[index].Name, exit.Name}, Status: exitResult.Status, Detail: detail}
+		}
+		return results, nil
+	}
+	results, err := r.testPrepared(ctx, results, prepared, indexes, func(proxyAddresses []string) ([]byte, error) {
+		content, _, err := singbox.BuildChainLatencyConfig(prepared, resolvedExit, proxyAddresses)
+		return content, err
+	})
+	for index := range results {
+		if index >= len(entries) {
+			break
+		}
+		results[index].Path = []string{entries[index].Name, exit.Name}
+	}
+	return results, err
+}
+
+func (r *singBoxRunner) testPrepared(ctx context.Context, results []Result, prepared []subscription.Node, indexes []int, build func([]string) ([]byte, error)) ([]Result, error) {
 	listeners, proxyAddresses, err := reserveProxyAddresses(len(prepared))
 	if err != nil {
 		return nil, err
@@ -129,7 +201,7 @@ func (r *singBoxRunner) Test(ctx context.Context, nodes []subscription.Node) ([]
 			}
 		}
 	}
-	content, _, err := singbox.BuildLatencyConfig(prepared, proxyAddresses)
+	content, err := build(proxyAddresses)
 	if err != nil {
 		closeListeners()
 		return nil, err

@@ -29,6 +29,7 @@ func openManager(t *testing.T, resolver ProxyResolver) *Manager {
 	if err != nil {
 		t.Fatal(err)
 	}
+	manager.allowPrivateTargets = true
 	return manager
 }
 
@@ -279,9 +280,17 @@ func TestProbeFailsOnRefusedConnection(t *testing.T) {
 	address := listener.Addr().String()
 	listener.Close()
 
-	result := probe(context.Background(), "http://"+address+"/", "")
+	result := probe(context.Background(), "http://"+address+"/", "", true)
 	if result.Status == StatusOK {
 		t.Fatalf("expected failure probing refused connection, got %+v", result)
+	}
+}
+
+func TestProbeBlocksPrivateTargets(t *testing.T) {
+	t.Parallel()
+	result := probe(context.Background(), "http://127.0.0.1:33334/healthz", "", false)
+	if result.Status != StatusFailed || result.Detail != "目标地址不可访问" {
+		t.Fatalf("private target result = %+v", result)
 	}
 }
 

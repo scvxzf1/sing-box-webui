@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"sing-box-webui/internal/dnsprofile"
 	"sing-box-webui/internal/singbox"
 	"sing-box-webui/internal/subscription"
 )
@@ -63,6 +64,51 @@ func TestOpenInstallsEmbeddedCore(t *testing.T) {
 	}
 	if err := client.Check(ctx, configPath); err != nil {
 		t.Fatalf("embedded sing-box rejected pool config: %v", err)
+	}
+	selectableConfig, err := singbox.BuildSelectableConfig(
+		[]singbox.RuntimeNodeTarget{
+			{Tag: "runtime-node-000", Node: subscription.Node{Type: "shadowsocks", Server: "1.1.1.1", Port: 443, Method: "aes-128-gcm", Password: "one"}},
+			{Tag: "runtime-node-001", Node: subscription.Node{Type: "trojan", Server: "8.8.8.8", Port: 443, Password: "two", TLS: subscription.TLS{Enabled: true, ServerName: "example.com"}}},
+		},
+		[]singbox.RuntimePoolTarget{{
+			Tag: "runtime-pool-000", AutoTag: "runtime-pool-auto-000", NodeTags: []string{"runtime-node-000", "runtime-node-001"},
+			Options: singbox.URLTestOptions{Interval: time.Minute, Tolerance: 80},
+		}},
+		[]singbox.RuntimeChainTarget{{
+			Tag: "runtime-chain-000", ExitTag: "runtime-node-001",
+			Members: []singbox.RuntimeNodeTarget{{
+				Tag: "runtime-chain-000", Node: subscription.Node{Type: "shadowsocks", Server: "1.0.0.1", Port: 443, Method: "aes-128-gcm", Password: "chain"},
+			}},
+		}},
+		nil,
+		"runtime-chain-000", singbox.ModeSystemProxy, 2080, nil,
+		singbox.ControllerOptions{Address: "127.0.0.1:39093", Secret: "test-secret"},
+		dnsprofile.DefaultProfile(), false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectablePath := filepath.Join(t.TempDir(), "selectable.json")
+	if err := os.WriteFile(selectablePath, selectableConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Check(ctx, selectablePath); err != nil {
+		t.Fatalf("embedded sing-box rejected selectable config: %v", err)
+	}
+	chainLatencyConfig, _, err := singbox.BuildChainLatencyConfig(
+		[]subscription.Node{{Type: "shadowsocks", Server: "1.1.1.1", Port: 443, Method: "aes-128-gcm", Password: "entry"}},
+		subscription.Node{Type: "trojan", Server: "8.8.8.8", Port: 443, Password: "exit", TLS: subscription.TLS{Enabled: true, ServerName: "example.com"}},
+		[]string{"127.0.0.1:39094"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chainLatencyPath := filepath.Join(t.TempDir(), "chain-latency.json")
+	if err := os.WriteFile(chainLatencyPath, chainLatencyConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Check(ctx, chainLatencyPath); err != nil {
+		t.Fatalf("embedded sing-box rejected chain latency config: %v", err)
 	}
 }
 

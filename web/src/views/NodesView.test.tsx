@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Subscription } from '../api/types'
@@ -7,6 +7,8 @@ import { NodesView } from './NodesView'
 
 const api = vi.hoisted(() => ({
   getSubscription: vi.fn(),
+  getSubscriptionNodeLink: vi.fn(),
+  importSubscriptionNodes: vi.fn(),
   listNodePools: vi.fn(),
   listSubscriptions: vi.fn(),
   selectNode: vi.fn(),
@@ -62,9 +64,15 @@ describe('NodesView', () => {
 	afterEach(cleanup)
   beforeEach(() => {
 	api.testNodeLatency.mockReset()
+    api.getSubscriptionNodeLink.mockReset()
+    api.importSubscriptionNodes.mockReset()
     api.updateNodePool.mockReset()
     window.localStorage.clear()
     api.getSubscription.mockResolvedValue(subscription)
+    api.getSubscriptionNodeLink.mockResolvedValue({
+      link: 'trojan://node-secret@tokyo.example.com:443#Tokyo',
+      source: 'original',
+    })
     api.listSubscriptions.mockResolvedValue([subscription])
     api.listNodePools.mockResolvedValue([{
       id: 'pool-1', name: 'Daily', members: [], memberCount: 0, availableCount: 0,
@@ -74,6 +82,13 @@ describe('NodesView', () => {
       createdAt: '2026-08-05T00:00:00Z', updatedAt: '2026-08-05T00:00:00Z',
     }])
     api.selectNode.mockResolvedValue(subscription)
+    api.importSubscriptionNodes.mockResolvedValue({
+      addedCount: 0,
+      duplicateCount: 0,
+      invalidCount: 0,
+      items: [],
+      subscription,
+    })
     api.testNodeLatency.mockResolvedValue({
       items: [{ nodeId: 'node-1', name: 'Tokyo', status: 'ok', latencyMs: 42 }],
     })
@@ -109,6 +124,92 @@ describe('NodesView', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 
+  it('opens the original node link on right click and keeps it out of the node list request', async () => {
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><NodesView /></QueryClientProvider>)
+
+    const nodeName = await screen.findByText('Tokyo')
+    const card = nodeName.closest('article')
+    expect(card).not.toBeNull()
+    fireEvent.contextMenu(card!)
+
+    expect(await screen.findByRole('dialog', { name: 'Tokyo' })).toBeInTheDocument()
+    await waitFor(() => expect(api.getSubscriptionNodeLink).toHaveBeenCalledWith('subscription-1', 'node-1'))
+    expect(screen.getByRole('textbox', { name: '原始节点链接' })).toHaveValue(
+      'trojan://node-secret@tokyo.example.com:443#Tokyo',
+    )
+    expect(api.getSubscription).toHaveBeenCalledWith('subscription-1', expect.any(AbortSignal))
+
+    await user.click(screen.getByRole('button', { name: '复制链接' }))
+    expect(await navigator.clipboard.readText()).toBe('trojan://node-secret@tokyo.example.com:443#Tokyo')
+    expect(screen.getByText('已复制')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '关闭节点链接' }))
+    expect(screen.queryByRole('dialog', { name: 'Tokyo' })).not.toBeInTheDocument()
+  })
+
+  it('imports multiple node links, tests recognized nodes, and stays open', async () => {
+    const importedNode: Subscription['nodes'][number] = {
+      id: 'node-3',
+      name: 'Singapore',
+      type: 'vless',
+      server: 'singapore.example.com',
+      port: 443,
+      tls: true,
+      selected: false,
+    }
+    api.importSubscriptionNodes.mockResolvedValue({
+      addedCount: 1,
+      duplicateCount: 1,
+      invalidCount: 1,
+      items: [
+        { line: 1, status: 'added', node: importedNode },
+        { line: 2, status: 'duplicate', node: subscription.nodes[0] },
+        { line: 3, status: 'invalid', error: '不支持的节点协议' },
+      ],
+      subscription: {
+        ...subscription,
+        nodeCount: 3,
+        nodes: [...subscription.nodes, importedNode],
+      },
+    })
+    api.testNodeLatency.mockResolvedValue({
+      items: [
+        { nodeId: 'node-3', name: 'Singapore', status: 'ok', latencyMs: 58 },
+        { nodeId: 'node-1', name: 'Tokyo', status: 'timeout' },
+      ],
+    })
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><NodesView /></QueryClientProvider>)
+
+    expect(await screen.findByText('Tokyo')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '导入节点' }))
+    const links = [
+      'vless://secret-user@singapore.example.com:443#Singapore',
+      'trojan://secret-password@tokyo.example.com:443#Tokyo',
+      'unknown://do-not-render',
+    ].join('\n')
+    await user.type(screen.getByRole('textbox', { name: '节点链接' }), links)
+    await user.click(screen.getByRole('button', { name: '添加并测试' }))
+
+    await waitFor(() => expect(api.importSubscriptionNodes).toHaveBeenCalledWith('subscription-1', { links }))
+    await waitFor(() => expect(api.testNodeLatency).toHaveBeenCalledWith('subscription-1', {
+      nodeIds: ['node-3', 'node-1'],
+    }))
+    expect(await screen.findByText('58 ms')).toBeInTheDocument()
+    expect(screen.getByText('超时')).toBeInTheDocument()
+    expect(screen.getByText('不支持的节点协议')).toBeInTheDocument()
+    expect(screen.getAllByText('已添加')).not.toHaveLength(0)
+    expect(screen.getAllByText('已存在')).not.toHaveLength(0)
+    expect(screen.getByRole('dialog', { name: '手动导入节点' })).toBeInTheDocument()
+    expect(within(screen.getByLabelText('导入结果')).queryByText(/secret-user|secret-password|do-not-render/)).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '关闭导入节点' }))
+    expect(screen.queryByRole('dialog', { name: '手动导入节点' })).not.toBeInTheDocument()
+  })
+
   it('keeps the subscription selector in the persisted subscription order', async () => {
     api.listSubscriptions.mockResolvedValue([reorderedSubscription, subscription])
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -133,6 +234,8 @@ describe('NodesView', () => {
     await user.click(screen.getByRole('button', { name: '测试 London 延迟' }))
 
     expect(api.testNodeLatency).toHaveBeenCalledTimes(2)
+    expect(screen.getByRole('button', { name: '测试 Tokyo 延迟' })).toHaveClass('node-card-region--testing')
+    expect(screen.getByRole('button', { name: '测试 Tokyo 延迟' })).toHaveAttribute('aria-busy', 'true')
     expect(screen.getByRole('button', { name: '测试 Tokyo 延迟' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '测试 London 延迟' })).toBeDisabled()
 
@@ -140,6 +243,8 @@ describe('NodesView', () => {
     resolvers.get('node-2')?.({ items: [{ nodeId: 'node-2', name: 'London', status: 'ok', latencyMs: 47 }] })
     expect(await screen.findByText('31 ms')).toBeInTheDocument()
     expect(await screen.findByText('47 ms')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '测试 Tokyo 延迟' })).not.toHaveClass('node-card-region--testing')
+    expect(screen.getByRole('button', { name: '测试 Tokyo 延迟' })).toHaveAttribute('aria-busy', 'false')
   })
 
   it('adds multiple selected nodes to a pool in one deduplicated update', async () => {
@@ -156,8 +261,12 @@ describe('NodesView', () => {
     render(<QueryClientProvider client={client}><NodesView /></QueryClientProvider>)
 
     expect(await screen.findByText('Tokyo')).toBeInTheDocument()
-    await user.click(screen.getByRole('checkbox', { name: '批量选择 Tokyo' }))
-    await user.click(screen.getByRole('checkbox', { name: '批量选择 London' }))
+    const tokyoBatch = screen.getByRole('button', { name: '批量选择 Tokyo' })
+    const londonBatch = screen.getByRole('button', { name: '批量选择 London' })
+    expect(tokyoBatch).toHaveAttribute('aria-pressed', 'false')
+    await user.click(tokyoBatch)
+    await user.click(londonBatch)
+    expect(tokyoBatch).toHaveAttribute('aria-pressed', 'true')
     await user.click(screen.getByRole('button', { name: '加入节点池 (2)' }))
     await user.click(screen.getByRole('button', { name: /Daily/ }))
 
@@ -169,6 +278,19 @@ describe('NodesView', () => {
       ],
     })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('selects the current node from the left card region', async () => {
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><NodesView /></QueryClientProvider>)
+
+    expect(await screen.findByRole('button', { name: '设 Tokyo 为当前节点' })).toHaveAttribute('aria-pressed', 'true')
+    const londonCurrent = screen.getByRole('button', { name: '设 London 为当前节点' })
+    expect(londonCurrent).toHaveAttribute('aria-pressed', 'false')
+    await user.click(londonCurrent)
+
+    expect(api.selectNode).toHaveBeenCalledWith('subscription-1', 'node-2')
   })
 
   it('paginates nodes and restores the persisted page size', async () => {

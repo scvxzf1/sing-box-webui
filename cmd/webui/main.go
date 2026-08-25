@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -24,6 +27,8 @@ import (
 	"sing-box-webui/internal/nodepool"
 	"sing-box-webui/internal/platform/privilege"
 	"sing-box-webui/internal/platform/systemproxy"
+	"sing-box-webui/internal/proxychain"
+	"sing-box-webui/internal/proxychannel"
 	"sing-box-webui/internal/routing"
 	"sing-box-webui/internal/singbox"
 	"sing-box-webui/internal/subscription"
@@ -32,6 +37,25 @@ import (
 )
 
 var version = "dev"
+
+func webServerAuthentication(config application.Config) (string, bool) {
+	return config.WebToken, !config.WebAuthEnabled
+}
+
+func channelReservedPorts(config application.Config) []uint16 {
+	ports := []uint16{config.MixedPort}
+	if _, port, err := net.SplitHostPort(config.Address); err == nil {
+		if value, parseErr := strconv.ParseUint(port, 10, 16); parseErr == nil && value != 0 {
+			ports = append(ports, uint16(value))
+		}
+	}
+	if origin, err := url.Parse(config.DevOrigin); err == nil {
+		if value, parseErr := strconv.ParseUint(origin.Port(), 10, 16); parseErr == nil && value != 0 {
+			ports = append(ports, uint16(value))
+		}
+	}
+	return ports
+}
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -77,6 +101,16 @@ func main() {
 		logger.Error("reconcile node pool references", "error", err)
 		os.Exit(1)
 	}
+	chains, err := proxychain.OpenManager(filepath.Join(config.DataDir, "proxy-chains"), subscriptions, pools)
+	if err != nil {
+		logger.Error("open proxy chain store", "error", err)
+		os.Exit(1)
+	}
+	channels, err := proxychannel.OpenManager(filepath.Join(config.DataDir, "proxy-channels"), subscriptions, channelReservedPorts(config)...)
+	if err != nil {
+		logger.Error("open proxy channel store", "error", err)
+		os.Exit(1)
+	}
 	subscriptionIDs := make([]string, 0, len(subscriptions.List()))
 	for _, item := range subscriptions.List() {
 		subscriptionIDs = append(subscriptionIDs, item.ID)
@@ -105,19 +139,26 @@ func main() {
 	}
 	processSupervisor := supervisor.NewManager(coreManager.BinaryPath())
 	proxyController := systemproxy.NewGNOMEController(config.DataDir)
-	controlService := control.New(control.Config{
-		Subscriptions: subscriptions,
-		Pools:         pools,
-		Rules:         rules,
-		DNS:           dnsProfiles,
-		Client:        singBoxClient,
-		ConfigStore:   configStore,
-		Supervisor:    processSupervisor,
-		SystemProxy:   proxyController,
-		Events:        broker,
-		TUNEnabled:    config.EnableTUN,
-		MixedPort:     config.MixedPort,
+	controlService, err := control.New(control.Config{
+		Subscriptions:   subscriptions,
+		Pools:           pools,
+		Chains:          chains,
+		Channels:        channels,
+		Rules:           rules,
+		DNS:             dnsProfiles,
+		Client:          singBoxClient,
+		ConfigStore:     configStore,
+		Supervisor:      processSupervisor,
+		SystemProxy:     proxyController,
+		Events:          broker,
+		TUNEnabled:      config.EnableTUN,
+		MixedPort:       config.MixedPort,
+		PreferencesPath: filepath.Join(config.DataDir, "runtime", "preferences.json"),
 	})
+	if err != nil {
+		logger.Error("open runtime preferences", "error", err)
+		os.Exit(1)
+	}
 	// Subscriptions fetch direct-first, then fall back to the running proxy
 	// (system-proxy mode); empty in TUN mode where the direct path is tunneled.
 	subscriptions.SetProxyResolver(controlService.ProxyAddress)
@@ -133,6 +174,12 @@ func main() {
 		_, err := controlService.ReapplyRules(reloadCtx)
 		return err
 	})
+	channels.SetReload(func() error {
+		reloadCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_, err := controlService.ReapplyRules(reloadCtx)
+		return err
+	})
 	trafficPolicy, err := trafficpolicy.Open(filepath.Join(config.DataDir, "traffic-policy"), controlService, pools, broker)
 	if err != nil {
 		logger.Error("open traffic policy store", "error", err)
@@ -143,23 +190,28 @@ func main() {
 		logger.Error("open connectivity store", "error", err)
 		os.Exit(1)
 	}
+	controlService.SetHealthProbeSource(connectivityManager)
+	webToken, allowUnauthenticated := webServerAuthentication(config)
 
 	server, err := api.NewServer(api.ServerConfig{
-		Address:       config.Address,
-		DevOrigin:     config.DevOrigin,
-		Version:       version,
-		Logger:        logger,
-		Events:        broker,
-		Subscriptions: subscriptions,
-		Pools:         pools,
-		Rules:         rules,
-		DNS:           dnsProfiles,
-		Latency:       latency.NewService(subscriptions, singBoxClient, filepath.Join(config.DataDir, "latency")),
-		Control:       controlService,
-		Core:          coreManager,
-		TrafficPolicy: trafficPolicy,
-		Connectivity:  connectivityManager,
-		WebToken:      config.WebToken,
+		Address:              config.Address,
+		DevOrigin:            config.DevOrigin,
+		Version:              version,
+		Logger:               logger,
+		Events:               broker,
+		Subscriptions:        subscriptions,
+		Pools:                pools,
+		Chains:               chains,
+		Channels:             channels,
+		Rules:                rules,
+		DNS:                  dnsProfiles,
+		Latency:              latency.NewService(subscriptions, singBoxClient, filepath.Join(config.DataDir, "latency")),
+		Control:              controlService,
+		Core:                 coreManager,
+		TrafficPolicy:        trafficPolicy,
+		Connectivity:         connectivityManager,
+		WebToken:             webToken,
+		AllowUnauthenticated: allowUnauthenticated,
 	})
 	if err != nil {
 		logger.Error("create Web API server", "error", err)

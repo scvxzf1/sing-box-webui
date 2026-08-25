@@ -9,6 +9,7 @@
 /web/coverage/
 /web/playwright-report/
 /web/test-results/
+/web/inspect-*-tmp.mjs
 
 # Editors and operating systems
 .DS_Store

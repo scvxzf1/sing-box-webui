@@ -144,6 +144,10 @@ func (m *Manager) Update(ctx context.Context, input UpdateInput) (Snapshot, erro
 		return Snapshot{}, err
 	}
 	m.mu.Lock()
+	if m.snapshot.State == StateTriggering || m.snapshot.State == StateRecovering {
+		m.mu.Unlock()
+		return Snapshot{}, fmt.Errorf("策略正在切换代理池，完成前不能修改配置")
+	}
 	wasActive := m.snapshot.State == StateActive
 	if wasActive && input.Enabled {
 		m.mu.Unlock()
@@ -282,12 +286,12 @@ func (m *Manager) tick(ctx context.Context, now time.Time) {
 		m.mu.Unlock()
 		return
 	}
-	m.original = control.ApplyInput{Mode: runtime.Mode, PoolID: runtime.PoolID}
+	m.original = control.ApplyInput{Mode: runtime.Mode, PoolID: runtime.PoolID, AllowLan: runtime.AllowLan}
 	m.snapshot.OriginalPoolID, m.snapshot.OriginalPoolName = runtime.PoolID, runtime.PoolName
 	m.snapshot.State = StateTriggering
 	downloadPoolID := m.config.DownloadPoolID
 	m.mu.Unlock()
-	_, err := m.control.Apply(ctx, control.ApplyInput{Mode: runtime.Mode, PoolID: downloadPoolID})
+	_, err := m.control.Apply(ctx, control.ApplyInput{Mode: runtime.Mode, PoolID: downloadPoolID, AllowLan: runtime.AllowLan})
 	m.mu.Lock()
 	if err != nil {
 		original := m.original
@@ -366,6 +370,8 @@ func (m *Manager) persistLocked() error {
 func (m *Manager) resetSamplesLocked() {
 	m.resetRateLocked()
 	m.original = control.ApplyInput{}
+	m.snapshot.CurrentDownloadBPS = 0
+	m.snapshot.ActiveConnections = 0
 	m.snapshot.TriggerProgressSeconds = 0
 	m.snapshot.ReleaseProgressSeconds = 0
 }

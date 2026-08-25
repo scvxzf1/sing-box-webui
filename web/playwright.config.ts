@@ -14,6 +14,9 @@ export default defineConfig({
     baseURL: 'http://127.0.0.1:33333',
     storageState,
     trace: 'retain-on-failure',
+    launchOptions: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+      ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH }
+      : undefined,
   },
   webServer: {
     command: resolve(repoRoot, 'scripts/dev.sh'),

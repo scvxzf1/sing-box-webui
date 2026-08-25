@@ -4,7 +4,7 @@ info:
   version: 0.1.0
   description: Local loopback API for the sing-box WebUI control plane.
 servers:
-  - url: http://127.0.0.1:11872
+  - url: http://127.0.0.1:33334
 paths:
   /healthz:
     get:
@@ -303,6 +303,51 @@ paths:
                 $ref: '#/components/schemas/Subscription'
         default:
           $ref: '#/components/responses/Error'
+  /api/v1/subscriptions/{id}/nodes/import:
+    parameters:
+      - $ref: '#/components/parameters/SubscriptionID'
+      - $ref: '#/components/parameters/CSRFToken'
+    post:
+      operationId: importSubscriptionNodes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportNodesInput'
+      responses:
+        '200':
+          description: Per-line import results and the updated subscription.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportNodesResponse'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/subscriptions/{id}/nodes/{nodeId}/link:
+    parameters:
+      - $ref: '#/components/parameters/SubscriptionID'
+      - name: nodeId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getSubscriptionNodeLink
+      responses:
+        '200':
+          description: Credential-bearing node URI, returned only on explicit request and never cached.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              description: Always `no-store`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodeLink'
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/subscriptions/{id}/latency:
     parameters:
       - $ref: '#/components/parameters/SubscriptionID'
@@ -435,12 +480,233 @@ paths:
           description: Node pool deleted.
         default:
           $ref: '#/components/responses/Error'
+  /api/v1/chains:
+    get:
+      operationId: listProxyChains
+      responses:
+        '200':
+          description: Stored proxy chains with resolved entry and exit status.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProxyChain'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      operationId: createProxyChain
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProxyChain'
+      responses:
+        '201':
+          description: Proxy chain created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyChain'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/chains/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getProxyChain
+      responses:
+        '200':
+          description: Proxy chain details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyChain'
+        default:
+          $ref: '#/components/responses/Error'
+    patch:
+      operationId: updateProxyChain
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProxyChain'
+      responses:
+        '200':
+          description: Proxy chain updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyChain'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: deleteProxyChain
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Proxy chain deleted. A running chain must be switched away first.
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/chains/{id}/latency:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: testProxyChainLatency
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: End-to-end latency for each entry path through the configured exit node.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LatencyResponse'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/channels:
+    get:
+      operationId: listProxyChannels
+      responses:
+        '200':
+          description: Stored proxy channels with resolved node status.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProxyChannel'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      operationId: createProxyChannel
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProxyChannel'
+      responses:
+        '201':
+          description: Proxy channel created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyChannel'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/channels/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getProxyChannel
+      responses:
+        '200':
+          description: Proxy channel details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyChannel'
+        default:
+          $ref: '#/components/responses/Error'
+    patch:
+      operationId: updateProxyChannel
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProxyChannel'
+      responses:
+        '200':
+          description: Proxy channel updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyChannel'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: deleteProxyChannel
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Proxy channel deleted.
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/channels/certificate:
+    get:
+      operationId: downloadProxyChannelCertificate
+      responses:
+        '200':
+          description: Self-signed CA certificate used by HTTPS proxy channels.
+          content:
+            application/x-pem-file:
+              schema:
+                type: string
+                format: binary
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/runtime:
     get:
       operationId: getRuntime
       responses:
         '200':
           description: Current proxy runtime and capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Runtime'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/runtime/preferences:
+    put:
+      operationId: updateRuntimePreferences
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRuntimePreferences'
+      responses:
+        '200':
+          description: Persisted runtime preferences and current runtime state.
           content:
             application/json:
               schema:
@@ -721,7 +987,7 @@ paths:
               $ref: '#/components/schemas/ApplyRuntime'
       responses:
         '200':
-          description: Selected node or node pool and proxy mode applied.
+          description: Selected node or node pool applied. A running compatible runtime switches its root selector without restarting.
           content:
             application/json:
               schema:
@@ -1110,6 +1376,18 @@ components:
           type: boolean
         selected:
           type: boolean
+    NodeLink:
+      type: object
+      additionalProperties: false
+      required: [link, source]
+      properties:
+        link:
+          type: string
+          description: Credential-bearing proxy URI. Must not be cached or included in list responses.
+        source:
+          type: string
+          enum: [original, generated]
+          description: Whether the URI was preserved from the source or generated from the current node configuration.
     Subscription:
       type: object
       additionalProperties: false
@@ -1186,6 +1464,51 @@ components:
           uniqueItems: true
           items:
             type: string
+    ImportNodesInput:
+      type: object
+      additionalProperties: false
+      required: [links]
+      properties:
+        links:
+          type: string
+          minLength: 1
+          maxLength: 262144
+    ImportNodeItem:
+      type: object
+      additionalProperties: false
+      required: [line, status]
+      properties:
+        line:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum: [added, duplicate, invalid]
+        error:
+          type: string
+        node:
+          $ref: '#/components/schemas/Node'
+    ImportNodesResponse:
+      type: object
+      additionalProperties: false
+      required: [addedCount, duplicateCount, invalidCount, items, subscription]
+      properties:
+        addedCount:
+          type: integer
+          minimum: 0
+        duplicateCount:
+          type: integer
+          minimum: 0
+        invalidCount:
+          type: integer
+          minimum: 0
+        items:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/ImportNodeItem'
+        subscription:
+          $ref: '#/components/schemas/Subscription'
     LatencyRequest:
       type: object
       additionalProperties: false
@@ -1380,6 +1703,11 @@ components:
           type: string
         name:
           type: string
+        path:
+          type: array
+          description: Ordered nodes traversed by a chain test, from entry to exit.
+          items:
+            type: string
         status:
           type: string
           enum: [ok, timeout, failed]
@@ -1596,6 +1924,181 @@ components:
           maximum: 3600
         interruptExistingConnections:
           type: boolean
+    ProxyChain:
+      type: object
+      additionalProperties: false
+      required: [id, name, entryType, exitNode, available, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        entryType:
+          type: string
+          enum: [node, pool]
+        entryNode:
+          $ref: '#/components/schemas/NodePoolMemberRef'
+        entryPoolId:
+          type: string
+        exitNode:
+          $ref: '#/components/schemas/NodePoolMemberRef'
+        entryName:
+          type: string
+        entryMemberCount:
+          type: integer
+        exitName:
+          type: string
+        available:
+          type: boolean
+        unavailableReason:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CreateProxyChain:
+      type: object
+      additionalProperties: false
+      required: [name, entryType, exitNode]
+      oneOf:
+        - required: [entryNode]
+        - required: [entryPoolId]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        entryType:
+          type: string
+          enum: [node, pool]
+        entryNode:
+          $ref: '#/components/schemas/NodePoolMemberRef'
+        entryPoolId:
+          type: string
+        exitNode:
+          $ref: '#/components/schemas/NodePoolMemberRef'
+    UpdateProxyChain:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        entryType:
+          type: string
+          enum: [node, pool]
+        entryNode:
+          $ref: '#/components/schemas/NodePoolMemberRef'
+        entryPoolId:
+          type: string
+        exitNode:
+          $ref: '#/components/schemas/NodePoolMemberRef'
+    ProxyChannel:
+      type: object
+      additionalProperties: false
+      required: [id, name, protocol, direction, port, node, enabled, listenAddress, accessAddresses, available, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        protocol:
+          type: string
+          enum: [socks5, http, https]
+        direction:
+          type: string
+          enum: [forward, reverse]
+        port:
+          type: integer
+          minimum: 1024
+          maximum: 65535
+        username:
+          type: string
+        password:
+          type: string
+        node:
+          $ref: '#/components/schemas/NodePoolMemberRef'
+        enabled:
+          type: boolean
+        nodeName:
+          type: string
+        listenAddress:
+          type: string
+        accessAddresses:
+          type: array
+          description: Reachable host addresses for client applications; shared channels expose routed LAN addresses instead of the wildcard listener.
+          items:
+            type: string
+        available:
+          type: boolean
+        unavailableReason:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CreateProxyChannel:
+      type: object
+      additionalProperties: false
+      required: [name, protocol, direction, port, node, enabled]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        protocol:
+          type: string
+          enum: [socks5, http, https]
+        direction:
+          type: string
+          enum: [forward, reverse]
+        port:
+          type: integer
+          minimum: 1024
+          maximum: 65535
+        username:
+          type: string
+          maxLength: 128
+        password:
+          type: string
+          maxLength: 256
+        node:
+          $ref: '#/components/schemas/NodePoolMemberRef'
+        enabled:
+          type: boolean
+    UpdateProxyChannel:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        protocol:
+          type: string
+          enum: [socks5, http, https]
+        direction:
+          type: string
+          enum: [forward, reverse]
+        port:
+          type: integer
+          minimum: 1024
+          maximum: 65535
+        username:
+          type: string
+          maxLength: 128
+        password:
+          type: string
+          maxLength: 256
+        node:
+          $ref: '#/components/schemas/NodePoolMemberRef'
+        enabled:
+          type: boolean
     Capability:
       type: object
       additionalProperties: false
@@ -1619,7 +2122,7 @@ components:
     PoolHealthMember:
       type: object
       additionalProperties: false
-      required: [subscriptionId, nodeId, name, status, failures]
+      required: [subscriptionId, nodeId, name, status, passedTests, totalTests, failures]
       properties:
         subscriptionId:
           type: string
@@ -1632,6 +2135,12 @@ components:
           enum: [unknown, healthy, degraded, quarantined]
         latencyMs:
           type: integer
+        passedTests:
+          type: integer
+          minimum: 0
+        totalTests:
+          type: integer
+          minimum: 0
         failures:
           type: integer
         lastCheckedAt:
@@ -1851,7 +2360,7 @@ components:
           enum: [system-proxy, tun]
         targetType:
           type: string
-          enum: [node, pool]
+          enum: [node, pool, chain]
         subscriptionId:
           type: string
         nodeId:
@@ -1861,6 +2370,17 @@ components:
         poolId:
           type: string
         poolName:
+          type: string
+        chainId:
+          type: string
+        chainName:
+          type: string
+        chainEntryType:
+          type: string
+          enum: [node, pool]
+        chainEntryName:
+          type: string
+        chainExitName:
           type: string
         allowLan:
           type: boolean
@@ -1972,12 +2492,15 @@ components:
       oneOf:
         - required: [subscriptionId, nodeId]
         - required: [poolId]
+        - required: [chainId]
       properties:
         subscriptionId:
           type: string
         nodeId:
           type: string
         poolId:
+          type: string
+        chainId:
           type: string
         mode:
           type: string
@@ -1986,6 +2509,14 @@ components:
           type: boolean
           default: false
           description: Allow other devices on the LAN to route through this proxy.
+    UpdateRuntimePreferences:
+      type: object
+      additionalProperties: false
+      required: [allowLan]
+      properties:
+        allowLan:
+          type: boolean
+          description: Persist LAN access for future proxy starts.
     CoreInfo:
       type: object
       additionalProperties: false

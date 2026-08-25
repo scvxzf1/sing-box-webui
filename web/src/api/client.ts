@@ -3,13 +3,22 @@ import type {
   CoreInfo,
   CoreUpdate,
   CreateSubscription,
+  ImportNodesInput,
+  ImportNodesResponse,
   ErrorResponse,
   LatencyRequest,
   LatencyResponse,
+  NodeLink,
   LinkSnapshot,
   NodePool,
   CreateNodePool,
   UpdateNodePool,
+  ProxyChain,
+  CreateProxyChain,
+  UpdateProxyChain,
+  ProxyChannel,
+  CreateProxyChannel,
+  UpdateProxyChannel,
   Runtime,
   Session,
   StatusResponse,
@@ -23,6 +32,7 @@ import type {
   UpdateRulePool,
   TrafficPolicy,
   UpdateTrafficPolicy,
+  UpdateRuntimePreferences,
   DnsProfile,
   UpdateDnsProfile,
   ConnectivityTarget,
@@ -144,6 +154,20 @@ export function createSubscription(input: CreateSubscription): Promise<Subscript
   return request('/api/v1/subscriptions', { method: 'POST', body: JSON.stringify(input) })
 }
 
+export function importSubscriptionNodes(subscriptionId: string, input: ImportNodesInput): Promise<ImportNodesResponse> {
+  return request(`/api/v1/subscriptions/${encodeURIComponent(subscriptionId)}/nodes/import`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function getSubscriptionNodeLink(subscriptionId: string, nodeId: string, signal?: AbortSignal): Promise<NodeLink> {
+  return request(
+    `/api/v1/subscriptions/${encodeURIComponent(subscriptionId)}/nodes/${encodeURIComponent(nodeId)}/link`,
+    { signal },
+  )
+}
+
 export function updateSubscription(id: string, input: UpdateSubscription): Promise<Subscription> {
   return request(`/api/v1/subscriptions/${encodeURIComponent(id)}`, {
     method: 'PATCH',
@@ -202,6 +226,44 @@ export function deleteNodePool(id: string): Promise<void> {
   return request(`/api/v1/pools/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
+export async function listProxyChains(signal?: AbortSignal): Promise<ProxyChain[]> {
+  const response = await request<{ items: ProxyChain[] }>('/api/v1/chains', { signal })
+  return response.items
+}
+
+export function createProxyChain(input: CreateProxyChain): Promise<ProxyChain> {
+  return request('/api/v1/chains', { method: 'POST', body: JSON.stringify(input) })
+}
+
+export function updateProxyChain(id: string, input: UpdateProxyChain): Promise<ProxyChain> {
+  return request(`/api/v1/chains/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) })
+}
+
+export function deleteProxyChain(id: string): Promise<void> {
+  return request(`/api/v1/chains/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export function testProxyChainLatency(id: string): Promise<LatencyResponse> {
+  return request(`/api/v1/chains/${encodeURIComponent(id)}/latency`, { method: 'POST' })
+}
+
+export async function listProxyChannels(signal?: AbortSignal): Promise<ProxyChannel[]> {
+  const response = await request<{ items: ProxyChannel[] }>('/api/v1/channels', { signal })
+  return response.items
+}
+
+export function createProxyChannel(input: CreateProxyChannel): Promise<ProxyChannel> {
+  return request('/api/v1/channels', { method: 'POST', body: JSON.stringify(input) })
+}
+
+export function updateProxyChannel(id: string, input: UpdateProxyChannel): Promise<ProxyChannel> {
+  return request(`/api/v1/channels/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) })
+}
+
+export function deleteProxyChannel(id: string): Promise<void> {
+  return request(`/api/v1/channels/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
 export async function listRules(signal?: AbortSignal): Promise<Rule[]> {
   const response = await request<{ items: Rule[] }>('/api/v1/rules', { signal })
   return response.items
@@ -252,6 +314,10 @@ export async function reorderRulePools(ids: string[]): Promise<RulePool[]> {
 
 export function getRuntime(signal?: AbortSignal): Promise<Runtime> {
   return request('/api/v1/runtime', { signal })
+}
+
+export function updateRuntimePreferences(input: UpdateRuntimePreferences): Promise<Runtime> {
+  return request('/api/v1/runtime/preferences', { method: 'PUT', body: JSON.stringify(input) })
 }
 
 export function applyRuntime(input: ApplyRuntime): Promise<Runtime> {

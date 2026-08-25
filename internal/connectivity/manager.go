@@ -12,6 +12,7 @@ package connectivity
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -26,6 +27,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"sing-box-webui/internal/netresolve"
+	"sing-box-webui/internal/netsafety"
 )
 
 const (
@@ -133,10 +137,11 @@ var diagnosticProviders = map[string]diagnosticProvider{
 }
 
 type Manager struct {
-	mu       sync.Mutex
-	path     string
-	resolver ProxyResolver
-	targets  []Target
+	mu                  sync.Mutex
+	path                string
+	resolver            ProxyResolver
+	targets             []Target
+	allowPrivateTargets bool
 }
 
 // Open loads (or seeds) the persisted target list from dataDirectory.
@@ -180,6 +185,17 @@ func (m *Manager) List() []Target {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.sortedLocked()
+}
+
+// HealthProbeURLs returns the user-managed quick-test targets used to score
+// node-pool members. The copy is stable for the lifetime of one pool startup.
+func (m *Manager) HealthProbeURLs() []string {
+	targets := m.List()
+	urls := make([]string, 0, len(targets))
+	for _, target := range targets {
+		urls = append(urls, target.URL)
+	}
+	return urls
 }
 
 func (m *Manager) Create(input CreateInput) (Target, error) {
@@ -269,7 +285,7 @@ func (m *Manager) Test(ctx context.Context, id string) (TestResponse, error) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			results[index] = measure(ctx, target, proxyAddress)
+			results[index] = measure(ctx, target, proxyAddress, m.allowPrivateTargets)
 		}()
 	}
 	wait.Wait()
@@ -400,10 +416,10 @@ func numberInt(value any) (int, bool) {
 
 // measure runs the direct probe and, when proxyAddress is non-empty, the
 // proxied probe concurrently, then combines them into a single Result.
-func measure(ctx context.Context, target Target, proxyAddress string) Result {
+func measure(ctx context.Context, target Target, proxyAddress string, allowPrivate bool) Result {
 	result := Result{TargetID: target.ID, Name: target.Name, URL: target.URL}
 	if proxyAddress == "" {
-		result.Direct = probe(ctx, target.URL, "")
+		result.Direct = probe(ctx, target.URL, "", allowPrivate)
 		return result
 	}
 	var direct, proxied PathResult
@@ -411,11 +427,11 @@ func measure(ctx context.Context, target Target, proxyAddress string) Result {
 	wait.Add(2)
 	go func() {
 		defer wait.Done()
-		direct = probe(ctx, target.URL, "")
+		direct = probe(ctx, target.URL, "", allowPrivate)
 	}()
 	go func() {
 		defer wait.Done()
-		proxied = probe(ctx, target.URL, proxyAddress)
+		proxied = probe(ctx, target.URL, proxyAddress, allowPrivate)
 	}()
 	wait.Wait()
 	result.Direct = direct
@@ -425,11 +441,17 @@ func measure(ctx context.Context, target Target, proxyAddress string) Result {
 
 // probe issues a single GET against targetURL. When proxyAddress is non-empty
 // the request is routed through that HTTP proxy; otherwise it goes direct.
-func probe(ctx context.Context, targetURL, proxyAddress string) PathResult {
+func probe(ctx context.Context, targetURL, proxyAddress string, allowPrivate bool) PathResult {
 	result := PathResult{Status: StatusFailed}
+	pinnedURL, originalHost, serverName, err := pinProbeTarget(ctx, targetURL, allowPrivate)
+	if err != nil {
+		result.Detail = "目标地址不可访问"
+		return result
+	}
 	transport := &http.Transport{
 		DialContext:         (&net.Dialer{Timeout: probeTimeout}).DialContext,
 		TLSHandshakeTimeout: probeTimeout,
+		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12, ServerName: serverName},
 	}
 	if proxyAddress != "" {
 		proxyURL, err := url.Parse("http://" + proxyAddress)
@@ -440,15 +462,22 @@ func probe(ctx context.Context, targetURL, proxyAddress string) PathResult {
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
 	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: probeTimeout}
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   probeTimeout,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, targetURL, nil)
+	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, pinnedURL, nil)
 	if err != nil {
 		result.Detail = "目标地址无效"
 		return result
 	}
+	request.Host = originalHost
 	request.Header.Set("User-Agent", "sing-box-webui-connectivity")
 
 	startedAt := time.Now()
@@ -475,6 +504,35 @@ func probe(ctx context.Context, targetURL, proxyAddress string) PathResult {
 	return result
 }
 
+func pinProbeTarget(ctx context.Context, targetURL string, allowPrivate bool) (string, string, string, error) {
+	parsed, err := url.ParseRequestURI(targetURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil {
+		return "", "", "", errInvalidURL
+	}
+	addresses, err := netresolve.PublicAddresses(ctx, parsed.Hostname())
+	if err != nil {
+		return "", "", "", err
+	}
+	for _, address := range addresses {
+		if !allowPrivate && !netsafety.AllowedPublicAddress(address) {
+			continue
+		}
+		port := parsed.Port()
+		if port == "" {
+			if parsed.Scheme == "https" {
+				port = "443"
+			} else {
+				port = "80"
+			}
+		}
+		originalHost := parsed.Host
+		serverName := parsed.Hostname()
+		parsed.Host = net.JoinHostPort(address.String(), port)
+		return parsed.String(), originalHost, serverName, nil
+	}
+	return "", "", "", fmt.Errorf("target host resolves only to blocked addresses")
+}
+
 // summarizeError trims noisy Go error text down to the actionable cause.
 func summarizeError(err error) string {
 	text := err.Error()
@@ -494,7 +552,7 @@ func normalize(name, rawURL string) (string, string, error) {
 	}
 	rawURL = strings.TrimSpace(rawURL)
 	parsed, err := url.ParseRequestURI(rawURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || len(rawURL) > 2048 {
 		return "", "", errInvalidURL
 	}
 	return name, rawURL, nil

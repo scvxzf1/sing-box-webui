@@ -116,7 +116,7 @@ func TestBuildPoolConfigUsesURLTestOutbound(t *testing.T) {
 		t.Fatalf("interrupt_exist_connections = %#v, want true", urltest["interrupt_exist_connections"])
 	}
 	selector := outbounds[3].(map[string]any)
-	if selector["type"] != "selector" || selector["tag"] != "proxy" || selector["default"] != "auto" {
+	if selector["type"] != "selector" || selector["tag"] != "proxy" || selector["default"] != "block" {
 		t.Fatalf("unexpected selector outbound: %+v", selector)
 	}
 	experimental := config["experimental"].(map[string]any)
@@ -144,6 +144,165 @@ func TestBuildPoolConfigUsesURLTestOutbound(t *testing.T) {
 	if len(addresses) != 2 || addresses[1] != "fdfe:dcba:9876::1/126" {
 		t.Fatalf("unexpected TUN pool addresses: %+v", addresses)
 	}
+}
+
+func TestBuildSelectableConfigCompilesRootAndPoolSelectors(t *testing.T) {
+	t.Parallel()
+	nodes := []RuntimeNodeTarget{
+		{Tag: "node-000", Node: subscription.Node{Type: "shadowsocks", Server: "1.1.1.1", Port: 443, Method: "aes-128-gcm", Password: "one"}},
+		{Tag: "node-001", Node: subscription.Node{Type: "trojan", Server: "8.8.8.8", Port: 443, Password: "two", TLS: subscription.TLS{Enabled: true}}},
+	}
+	pools := []RuntimePoolTarget{{
+		Tag: "pool-000", AutoTag: "pool-auto-000", NodeTags: []string{"node-000", "node-001"},
+		Options: URLTestOptions{URL: "https://www.gstatic.com/generate_204", Interval: time.Minute, Tolerance: 80, IdleTimeout: 10 * time.Minute},
+	}}
+	content, err := BuildSelectableConfig(nodes, pools, nil, nil, "pool-000", ModeSystemProxy, 2080, nil,
+		ControllerOptions{Address: "127.0.0.1:39092", Secret: "secret"}, dnsprofile.DefaultProfile(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(content, &config); err != nil {
+		t.Fatal(err)
+	}
+	outbounds := config["outbounds"].([]any)
+	if len(outbounds) != 7 {
+		t.Fatalf("outbounds = %d, want 7", len(outbounds))
+	}
+	poolSelector := outbounds[3].(map[string]any)
+	if poolSelector["tag"] != "pool-000" || poolSelector["default"] != "block" {
+		t.Fatalf("pool selector = %#v", poolSelector)
+	}
+	rootSelector := outbounds[4].(map[string]any)
+	if rootSelector["tag"] != "proxy" || rootSelector["default"] != "pool-000" || rootSelector["interrupt_exist_connections"] != false {
+		t.Fatalf("root selector = %#v", rootSelector)
+	}
+}
+
+func TestBuildSelectableConfigCompilesNodeAndPoolChains(t *testing.T) {
+	t.Parallel()
+	nodes := []RuntimeNodeTarget{
+		{Tag: "node-entry-1", Node: subscription.Node{Name: "Entry one", Type: "shadowsocks", Server: "1.1.1.1", Port: 443, Method: "aes-128-gcm", Password: "one"}},
+		{Tag: "node-entry-2", Node: subscription.Node{Name: "Entry two", Type: "trojan", Server: "8.8.8.8", Port: 443, Password: "two"}},
+		{Tag: "node-exit", Node: subscription.Node{Name: "Exit", Type: "shadowsocks", Server: "9.9.9.9", Port: 443, Method: "aes-128-gcm", Password: "exit"}},
+	}
+	options := URLTestOptions{Interval: time.Minute, Tolerance: 80, IdleTimeout: 10 * time.Minute}
+	chains := []RuntimeChainTarget{
+		{Tag: "chain-node", ExitTag: "node-exit", Members: []RuntimeNodeTarget{{Tag: "chain-node", Node: nodes[0].Node}}},
+		{Tag: "chain-pool", AutoTag: "chain-pool-auto", ExitTag: "node-exit", Options: &options, Members: []RuntimeNodeTarget{
+			{Tag: "chain-member-1", Node: nodes[0].Node}, {Tag: "chain-member-2", Node: nodes[1].Node},
+		}},
+	}
+	content, err := BuildSelectableConfig(nodes, nil, chains, nil, "chain-pool", ModeSystemProxy, 2080, nil,
+		ControllerOptions{Address: "127.0.0.1:39092", Secret: "secret"}, dnsprofile.DefaultProfile(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(content, &config); err != nil {
+		t.Fatal(err)
+	}
+	outbounds := config["outbounds"].([]any)
+	byTag := make(map[string]map[string]any, len(outbounds))
+	for _, raw := range outbounds {
+		outbound := raw.(map[string]any)
+		byTag[outbound["tag"].(string)] = outbound
+	}
+	for _, tag := range []string{"chain-node", "chain-member-1", "chain-member-2"} {
+		entryTag := tag + "-entry"
+		if byTag[tag]["detour"] != entryTag {
+			t.Fatalf("chain outbound %q detour = %#v, want %q", tag, byTag[tag]["detour"], entryTag)
+		}
+		if byTag[tag]["server"] != "9.9.9.9" {
+			t.Fatalf("chain outbound %q server = %#v, want exit server", tag, byTag[tag]["server"])
+		}
+		if byTag[entryTag]["server"] == "9.9.9.9" {
+			t.Fatalf("chain entry outbound %q unexpectedly uses exit server", entryTag)
+		}
+	}
+	if byTag["chain-pool"]["type"] != "selector" || byTag["chain-pool-auto"]["type"] != "urltest" {
+		t.Fatalf("pool chain selectors are missing: %+v", byTag)
+	}
+	rootTargets := byTag["proxy"]["outbounds"].([]any)
+	if !containsAnyString(rootTargets, "chain-node") || !containsAnyString(rootTargets, "chain-pool") {
+		t.Fatalf("root selector does not contain chain targets: %+v", rootTargets)
+	}
+}
+
+func TestBuildChainLatencyConfigUsesEntryBeforeExit(t *testing.T) {
+	t.Parallel()
+	entry := subscription.Node{Name: "Entry", Type: "shadowsocks", Server: "1.1.1.1", Port: 443, Method: "aes-128-gcm", Password: "entry"}
+	exit := subscription.Node{Name: "Exit", Type: "trojan", Server: "9.9.9.9", Port: 443, Password: "exit"}
+	content, tags, err := BuildChainLatencyConfig([]subscription.Node{entry}, exit, []string{"127.0.0.1:39001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tags) != 1 || tags[0] != "chain-probe-000" {
+		t.Fatalf("unexpected probe tags: %+v", tags)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(content, &config); err != nil {
+		t.Fatal(err)
+	}
+	byTag := make(map[string]map[string]any)
+	for _, raw := range config["outbounds"].([]any) {
+		outbound := raw.(map[string]any)
+		byTag[outbound["tag"].(string)] = outbound
+	}
+	if byTag["chain-probe-000"]["server"] != "9.9.9.9" || byTag["chain-probe-000"]["detour"] != "chain-probe-entry-000" {
+		t.Fatalf("unexpected chain exit outbound: %+v", byTag["chain-probe-000"])
+	}
+	if byTag["chain-probe-entry-000"]["server"] != "1.1.1.1" {
+		t.Fatalf("unexpected chain entry outbound: %+v", byTag["chain-probe-entry-000"])
+	}
+}
+
+func TestBuildSelectableConfigCompilesProxyChannels(t *testing.T) {
+	t.Parallel()
+	nodes := []RuntimeNodeTarget{{
+		Tag: "node-000", Node: subscription.Node{Type: "shadowsocks", Server: "1.1.1.1", Port: 443, Method: "aes-128-gcm", Password: "one"},
+	}}
+	channels := []RuntimeChannelTarget{
+		{Tag: "channel-socks", Protocol: "socks5", Listen: "127.0.0.1", Port: 1080, OutboundTag: "node-000"},
+		{Tag: "channel-https", Protocol: "https", Listen: "0.0.0.0", Port: 18443, Username: "app", Password: "secret", OutboundTag: "node-000", CertificatePath: "/tmp/channel.pem", KeyPath: "/tmp/channel-key.pem"},
+	}
+	content, err := BuildSelectableConfig(nodes, nil, nil, channels, "node-000", ModeSystemProxy, 2080, nil,
+		ControllerOptions{}, dnsprofile.DefaultProfile(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(content, &config); err != nil {
+		t.Fatal(err)
+	}
+	inbounds := config["inbounds"].([]any)
+	if len(inbounds) != 3 {
+		t.Fatalf("inbounds = %d, want 3", len(inbounds))
+	}
+	httpsInbound := inbounds[2].(map[string]any)
+	if httpsInbound["type"] != "http" || httpsInbound["listen"] != "0.0.0.0" {
+		t.Fatalf("unexpected HTTPS inbound: %+v", httpsInbound)
+	}
+	tls := httpsInbound["tls"].(map[string]any)
+	if tls["certificate_path"] != "/tmp/channel.pem" || tls["key_path"] != "/tmp/channel-key.pem" {
+		t.Fatalf("unexpected HTTPS TLS config: %+v", tls)
+	}
+	rules := config["route"].(map[string]any)["rules"].([]any)
+	for index, tag := range []string{"channel-socks", "channel-https"} {
+		rule := rules[index].(map[string]any)
+		if rule["outbound"] != "node-000" || rule["inbound"].([]any)[0] != tag {
+			t.Fatalf("unexpected channel route rule: %+v", rule)
+		}
+	}
+}
+
+func containsAnyString(values []any, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBuildConfigCustomDNSProfile(t *testing.T) {
@@ -194,8 +353,42 @@ func TestBuildConfigCustomDNSProfile(t *testing.T) {
 	}
 	route := config["route"].(map[string]any)
 	defaultResolver := route["default_domain_resolver"].(map[string]any)
-	if defaultResolver["server"] != "dns-remote" {
+	if defaultResolver["server"] != "dns-bootstrap" {
 		t.Fatalf("unexpected default domain resolver: %+v", route)
+	}
+}
+
+func TestBuildConfigAvoidsProxiedDNSBootstrapCycle(t *testing.T) {
+	t.Parallel()
+	node := subscription.Node{
+		Type: "vless", Server: "entry.example.com", Port: 443, UUID: "81cb065d-0bce-42c5-a8ce-e4b1ac1c98af",
+		TLS: subscription.TLS{Enabled: true, ServerName: "entry.example.com"},
+	}
+	profile := dnsprofile.Profile{
+		Servers: []dnsprofile.Server{{Tag: "dns-remote", Type: "https", Server: "dns.google", Detour: "proxy"}},
+		Final:   "dns-remote", Strategy: dnsprofile.StrategyPreferIPv4,
+	}
+	content, err := BuildConfigWithController(node, ModeTUN, 2080, nil, ControllerOptions{}, profile, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(content, &config); err != nil {
+		t.Fatal(err)
+	}
+	dns := config["dns"].(map[string]any)
+	servers := dns["servers"].([]any)
+	bootstrap := servers[0].(map[string]any)
+	if bootstrap["tag"] != "dns-bootstrap" || bootstrap["server"] != "223.5.5.5" {
+		t.Fatalf("unexpected bootstrap DNS: %+v", bootstrap)
+	}
+	remote := servers[1].(map[string]any)
+	if remote["detour"] != "proxy" || remote["domain_resolver"].(map[string]any)["server"] != "dns-bootstrap" {
+		t.Fatalf("proxied DNS server is not independently bootstrapped: %+v", remote)
+	}
+	resolver := config["route"].(map[string]any)["default_domain_resolver"].(map[string]any)
+	if resolver["server"] != "dns-bootstrap" {
+		t.Fatalf("proxy outbounds do not use bootstrap DNS: %+v", resolver)
 	}
 }
 
@@ -217,7 +410,7 @@ func TestBuildConfigFakeIPProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	dns := config["dns"].(map[string]any)
-	if dns["final"] != "dns-google-fakeip" {
+	if dns["final"] != "dns-google" {
 		t.Fatalf("fakeip final = %v", dns["final"])
 	}
 	servers := dns["servers"].([]any)
@@ -278,5 +471,30 @@ func TestBuildConfigIncludesRealityAndUTLS(t *testing.T) {
 	utls := tls["utls"].(map[string]any)
 	if reality["public_key"] != "public-key" || reality["short_id"] != "0123456789abcdef" || utls["fingerprint"] != "chrome" {
 		t.Fatalf("unexpected TLS config: %+v", tls)
+	}
+}
+
+func TestBuildConfigDefaultsRealityUTLSFingerprint(t *testing.T) {
+	t.Parallel()
+	node := subscription.Node{
+		Type: "vless", Server: "proxy.example.com", Port: 443,
+		UUID: "11111111-1111-1111-1111-111111111111",
+		TLS: subscription.TLS{
+			Enabled: true, ServerName: "example.com",
+			Reality: subscription.Reality{Enabled: true, PublicKey: "public-key"},
+		},
+	}
+	content, _, err := BuildLatencyConfig([]subscription.Node{node}, []string{"127.0.0.1:39090"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(content, &config); err != nil {
+		t.Fatal(err)
+	}
+	tls := config["outbounds"].([]any)[0].(map[string]any)["tls"].(map[string]any)
+	utls := tls["utls"].(map[string]any)
+	if utls["enabled"] != true || utls["fingerprint"] != "chrome" {
+		t.Fatalf("unexpected default Reality uTLS config: %+v", utls)
 	}
 }

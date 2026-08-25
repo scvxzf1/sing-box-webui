@@ -46,6 +46,7 @@ type Server struct {
 	Type   string `json:"type"`
 	Server string `json:"server,omitempty"`
 	Port   *int   `json:"port,omitempty"`
+	Detour string `json:"detour,omitempty"`
 }
 
 type Profile struct {
@@ -155,12 +156,19 @@ func validateProfile(input Profile) (Profile, error) {
 		if _, ok := supportedServerTypes[server.Type]; !ok {
 			return Profile{}, fmt.Errorf("unsupported DNS server type %q", server.Type)
 		}
+		server.Detour = strings.TrimSpace(server.Detour)
+		if server.Detour != "" && server.Detour != "proxy" && server.Detour != "direct" && server.Detour != "block" {
+			return Profile{}, fmt.Errorf("DNS server %q detour must be proxy, direct or block", server.Tag)
+		}
 		switch server.Type {
 		case "local", "hosts":
 			if server.Server != "" {
 				return Profile{}, fmt.Errorf("DNS server %q of type %q must not set an address", server.Tag, server.Type)
 			}
 			server.Port = nil
+			if server.Detour != "" {
+				return Profile{}, fmt.Errorf("DNS server %q of type %q must not set detour", server.Tag, server.Type)
+			}
 		default:
 			if err := validateServerAddress(server.Server); err != nil {
 				return Profile{}, fmt.Errorf("DNS server %q: %w", server.Tag, err)

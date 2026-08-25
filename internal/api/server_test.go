@@ -8,13 +8,18 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"sing-box-webui/internal/control"
 	"sing-box-webui/internal/dnsprofile"
 	"sing-box-webui/internal/events"
 	"sing-box-webui/internal/latency"
+	"sing-box-webui/internal/proxychannel"
 	"sing-box-webui/internal/routing"
+	"sing-box-webui/internal/subscription"
 )
 
 type fakeLatencyTester struct {
@@ -69,8 +74,9 @@ func TestNewServerRequiresExplicitAuthenticationMode(t *testing.T) {
 
 func TestWebAuthentication(t *testing.T) {
 	t.Parallel()
+	const webToken = "test-token-with-32-characters-value"
 	server, err := NewServer(ServerConfig{
-		Address: "127.0.0.1:11872", DevOrigin: "http://127.0.0.1:5173", WebToken: "test-token-with-32-characters-value",
+		Address: "127.0.0.1:11872", DevOrigin: "http://127.0.0.1:5173", WebToken: webToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -106,6 +112,12 @@ func TestWebAuthentication(t *testing.T) {
 	if response.Code != http.StatusOK || len(response.Result().Cookies()) != 1 {
 		t.Fatalf("login status = %d cookies=%d body=%s", response.Code, len(response.Result().Cookies()), response.Body.String())
 	}
+	if strings.Contains(response.Body.String(), webToken) || strings.Contains(response.Header().Get("Set-Cookie"), webToken) {
+		t.Fatal("successful login response disclosed the Web token")
+	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("login Cache-Control = %q, want no-store", response.Header().Get("Cache-Control"))
+	}
 	cookie := response.Result().Cookies()[0]
 	if !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode {
 		t.Fatalf("session cookie flags: HttpOnly=%v SameSite=%v", cookie.HttpOnly, cookie.SameSite)
@@ -117,6 +129,12 @@ func TestWebAuthentication(t *testing.T) {
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("authenticated session status = %d, want 200", response.Code)
+	}
+	if strings.Contains(response.Body.String(), webToken) {
+		t.Fatal("session response disclosed the Web token")
+	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("session Cache-Control = %q, want no-store", response.Header().Get("Cache-Control"))
 	}
 }
 
@@ -233,6 +251,193 @@ func TestNodeLatencyEndpoint(t *testing.T) {
 	}
 	if response.Code != http.StatusServiceUnavailable || errorResponse.Error.Code != "latency_unavailable" {
 		t.Fatalf("status=%d body=%+v", response.Code, errorResponse)
+	}
+}
+
+func TestRuntimePreferencesEndpointPersistsAllowLan(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "runtime", "preferences.json")
+	controlService, err := control.New(control.Config{PreferencesPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(ServerConfig{
+		Address: "127.0.0.1:11872", DevOrigin: "http://127.0.0.1:5173", Control: controlService, AllowUnauthenticated: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPut, "http://127.0.0.1:11872/api/v1/runtime/preferences", strings.NewReader(`{"allowLan":true}`))
+	request.Header.Set("Origin", "http://127.0.0.1:5173")
+	request.Header.Set("X-CSRF-Token", server.csrfToken)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var runtime control.Runtime
+	if err := json.Unmarshal(response.Body.Bytes(), &runtime); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.State != "stopped" || !runtime.AllowLan {
+		t.Fatalf("runtime = %+v", runtime)
+	}
+	restored, err := control.New(control.Config{PreferencesPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restored.Status(context.Background()).AllowLan {
+		t.Fatal("persisted LAN preference was not restored")
+	}
+
+	request = httptest.NewRequest(http.MethodPut, "http://127.0.0.1:11872/api/v1/runtime/preferences", strings.NewReader(`{}`))
+	request.Header.Set("Origin", "http://127.0.0.1:5173")
+	request.Header.Set("X-CSRF-Token", server.csrfToken)
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("missing allowLan status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestImportSubscriptionNodesReturnsSanitizedPartialResults(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	stored, err := json.Marshal([]subscription.Subscription{{
+		ID: "sub-1", Name: "Main", URL: "https://subscription.example.com", Active: true, Nodes: []subscription.Node{},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "subscriptions.json"), stored, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	subscriptions, err := subscription.OpenManager(directory, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(ServerConfig{
+		Address: "127.0.0.1:11872", DevOrigin: "http://127.0.0.1:5173", Subscriptions: subscriptions, AllowUnauthenticated: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(subscription.ImportNodesInput{
+		Links: "trojan://manual-secret@manual.example.com:443#Manual\nftp://hidden-secret@invalid.example.com:21",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:11872/api/v1/subscriptions/sub-1/nodes/import", strings.NewReader(string(payload)))
+	request.Header.Set("Origin", "http://127.0.0.1:5173")
+	request.Header.Set("X-CSRF-Token", server.csrfToken)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "manual-secret") || strings.Contains(response.Body.String(), "hidden-secret") {
+		t.Fatalf("response leaked node credentials: %s", response.Body.String())
+	}
+	var result subscription.ImportNodesResult
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.AddedCount != 1 || result.InvalidCount != 1 || result.Subscription.NodeCount != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+
+	nodeID := result.Items[0].Node.ID
+	request = httptest.NewRequest(http.MethodGet, "http://127.0.0.1:11872/api/v1/subscriptions/sub-1/nodes/"+nodeID+"/link", nil)
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("node link status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	var link subscription.NodeLink
+	if err := json.Unmarshal(response.Body.Bytes(), &link); err != nil {
+		t.Fatal(err)
+	}
+	if link.Link != "trojan://manual-secret@manual.example.com:443#Manual" || link.Source != subscription.NodeLinkSourceOriginal {
+		t.Fatalf("node link response = %+v", link)
+	}
+}
+
+func TestProxyChannelEndpointsCreateListAndDownloadCertificate(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	subscriptionDirectory := filepath.Join(root, "subscriptions")
+	if err := os.MkdirAll(subscriptionDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := json.Marshal([]subscription.Subscription{{
+		ID: "sub-1", Name: "Primary", Nodes: []subscription.Node{{
+			ID: "node-1", Name: "Tokyo", Type: "shadowsocks", Server: "1.1.1.1", Port: 443,
+			Method: "aes-128-gcm", Password: "node-secret",
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subscriptionDirectory, "subscriptions.json"), stored, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	subscriptions, err := subscription.OpenManager(subscriptionDirectory, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	channels, err := proxychannel.OpenManager(filepath.Join(root, "channels"), subscriptions, 2080)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(ServerConfig{
+		Address: "127.0.0.1:11872", DevOrigin: "http://127.0.0.1:5173",
+		Subscriptions: subscriptions, Channels: channels, AllowUnauthenticated: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:11872/api/v1/channels", strings.NewReader(`{"name":"LAN HTTP","protocol":"http","direction":"reverse","port":18080,"node":{"subscriptionId":"sub-1","nodeId":"node-1"},"enabled":true}`))
+	request.Header.Set("Origin", "http://127.0.0.1:5173")
+	request.Header.Set("X-CSRF-Token", server.csrfToken)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("unauthenticated shared channel status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "http://127.0.0.1:11872/api/v1/channels", strings.NewReader(`{"name":"LAN HTTP","protocol":"http","direction":"reverse","port":18080,"username":"browser","password":"channel-secret","node":{"subscriptionId":"sub-1","nodeId":"node-1"},"enabled":true}`))
+	request.Header.Set("Origin", "http://127.0.0.1:5173")
+	request.Header.Set("X-CSRF-Token", server.csrfToken)
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "http://127.0.0.1:11872/api/v1/channels", nil)
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	var list struct {
+		Items []proxychannel.View `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || len(list.Items) != 1 || list.Items[0].ListenAddress != "0.0.0.0:18080" || list.Items[0].AccessAddresses == nil || !list.Items[0].Available {
+		t.Fatalf("status=%d channels=%+v", response.Code, list.Items)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "http://127.0.0.1:11872/api/v1/channels/certificate", nil)
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "BEGIN CERTIFICATE") || strings.Contains(response.Body.String(), "PRIVATE KEY") {
+		t.Fatalf("certificate status=%d body=%q", response.Code, response.Body.String())
 	}
 }
 

@@ -44,18 +44,18 @@ monorepo。
 目标端口：
 
 ```text
-Vite:  127.0.0.1:5173
-Go:    127.0.0.1:11872
+Vite:  127.0.0.1:33333
+Go:    127.0.0.1:33334
 ```
 
 Vite 只代理：
 
 ```text
-/api     -> http://127.0.0.1:11872
-/healthz -> http://127.0.0.1:11872
+/api     -> http://127.0.0.1:33334
+/healthz -> http://127.0.0.1:33334
 ```
 
-`/api` 的代理目标同样是 `http://127.0.0.1:11872`。SSE 端点使用 `/api/v1`
+`/api` 的代理目标同样是 `http://127.0.0.1:33334`。SSE 端点使用 `/api/v1`
 前缀，因此不需要第二条事件代理规则。`/healthz` 是用于开发验收的唯一额外代理。
 
 禁止配置任意路径代理或 `host: true`。Go 开发模式只允许精确的 Vite origin，不能用
@@ -72,14 +72,15 @@ npm --prefix web run dev
 ```
 
 脚手架完成后提供 `./scripts/dev.sh` 作为单命令入口。脚本必须转发信号、在任一子进程
-失败时退出并清理另一个进程，同时拒绝以 root 身份运行。
+失败时退出并清理另一个进程，同时拒绝以 root 身份运行。它会等待 Go API 的
+`/healthz` 返回成功后再启动 Vite，避免页面的 SSE 代理连接抢在后端监听之前建立。
 
 ## 5. 开发数据
 
 默认开发配置写入仓库的 `var/`，该目录必须加入 `.gitignore`。建议环境变量：
 
 ```text
-SING_BOX_WEBUI_ADDR=127.0.0.1:11872
+SING_BOX_WEBUI_ADDR=127.0.0.1:33334
 SING_BOX_WEBUI_DATA_DIR=./var/data
 SING_BOX_WEBUI_RUNTIME_DIR=./var/run
 SING_BOX_WEBUI_LOG_LEVEL=debug
@@ -112,6 +113,15 @@ HttpOnly、SameSite=Strict 的短期会话 Cookie，不把令牌写入 Web Stora
 `sing-box-webui:connection-target-type`、`sing-box-webui:connection-subscription-id`
 和 `sing-box-webui:connection-pool-id`。后两者只保存不透明 ID，不包含订阅地址、
 节点配置或运行参数；已删除的 ID 会在列表加载后自动回退到有效选项。
+
+首次开启代理会把所有有效单节点和可解析节点池编译进同一运行目录。代理运行中，连接页
+选择不同单节点或节点池后显示“热切换”；当代理模式与局域网监听保持不变且目标目录未过期时，
+后端只更新根 selector。新导入节点、节点池成员变更、规则/DNS 变更仍可能触发完整重载。
+
+链式代理管理页负责链路的创建、编辑、删除和端到端测试，连接页将链路作为第三类运行
+目标。资源 API 位于 `/api/v1/chains`，测试接口位于 `/api/v1/chains/{id}/latency`。
+链路或入口/出口依赖变化会使运行目录签名失效，下一次应用自动走完整配置校验与重载；
+没有变化时复用根 selector 热切换语义。
 
 `POST /api/v1/subscriptions/{id}/latency` 支持单节点或批量手动测试，默认使用托管
 sing-box 核心。后端生成隔离的临时 sing-box 配置，通过各节点真实出站访问
@@ -174,7 +184,8 @@ outbound。匹配顺序固定为手动规则、订阅规则、全局兜底；手
 节点延迟探测仍使用节点池配置的原间隔，不会每秒发起 HTTPS 探测。
 
 首版只支持“当前节点池 -> 下载节点池 -> 原节点池”整体切换。切换经过
-`control.Service.Apply`，所以会中断全部现有连接；下载器或服务器不支持断点续传时可能失败。
+`control.Service.Apply`；目标在当前运行目录时只改变根 selector，既有连接保持原出站，
+新连接进入下载池。目录陈旧而退回完整应用时仍会中断现有连接。
 下载池启用时必须至少有 2 个可用成员；当前运行目标是单节点、代理未运行或流量统计
 尚未就绪时，策略只等待且不触发切换。
 
@@ -234,6 +245,11 @@ npm --prefix web run typecheck
 npm --prefix web test
 npm --prefix web run build
 ```
+
+代理通道的本机联调必须在 sing-box 运行后进行。可分别使用
+`curl --proxy socks5h://127.0.0.1:<port>`、`curl --proxy http://127.0.0.1:<port>` 验证 SOCKS5/HTTP；
+HTTPS 代理还应使用 `--proxy-cacert` 指向从 `/api/v1/channels/certificate` 下载的证书。
+共享入口需在局域网另一台设备上使用宿主机实际 IP 和用户名/密码验证，并确认防火墙只放行预期网段。
 
 `generate:api` 根据 `api/openapi.yaml` 更新 TypeScript 类型。生成后如果出现非预期差异，
 必须先修正 API schema 或 handler，不能手工修改生成文件。

@@ -8,6 +8,32 @@ import (
 	"testing"
 )
 
+func TestParseNodeLinkRecognizesProtocolsWithoutLeakingCredentials(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		link     string
+		wantType string
+	}{
+		{link: "trojan://secret@trojan.example.com:443#Trojan", wantType: "trojan"},
+		{link: "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls#VLESS", wantType: "vless"},
+		{link: "socks5://user:pass@socks.example.com:1080#SOCKS", wantType: "socks"},
+	}
+	for _, test := range tests {
+		node, err := ParseNodeLink(test.link)
+		if err != nil {
+			t.Fatalf("ParseNodeLink(%q) error = %v", test.wantType, err)
+		}
+		if node.Type != test.wantType || node.ID == "" || node.Name == "" {
+			t.Fatalf("ParseNodeLink(%q) = %+v", test.wantType, node)
+		}
+	}
+
+	_, err := ParseNodeLink("trojan://do-not-leak@missing-port.example.com")
+	if err == nil || strings.Contains(err.Error(), "do-not-leak") {
+		t.Fatalf("ParseNodeLink() error leaked credentials: %v", err)
+	}
+}
+
 func TestParserParsesBase64Subscription(t *testing.T) {
 	t.Parallel()
 	vmessJSON := `{"v":"2","ps":"VMess Tokyo","add":"vmess.example.com","port":"443","id":"11111111-1111-1111-1111-111111111111","aid":"0","scy":"auto","net":"ws","host":"cdn.example.com","path":"/ws","tls":"tls","sni":"vmess.example.com"}`
@@ -28,6 +54,19 @@ func TestParserParsesBase64Subscription(t *testing.T) {
 	}
 	if result.Nodes[1].Type != "vmess" || !result.Nodes[1].TLS.Enabled || result.Nodes[1].Transport.Type != "ws" {
 		t.Fatalf("unexpected vmess node: %+v", result.Nodes[1])
+	}
+}
+
+func TestParseNodeLinkAcceptsSIP002ShadowsocksWithUnpaddedUserInfo(t *testing.T) {
+	t.Parallel()
+
+	credentials := base64.RawStdEncoding.EncodeToString([]byte("chacha20-ietf-poly1305:" + strings.Repeat("a", 64)))
+	node, err := ParseNodeLink("ss://" + credentials + "@107.149.30.19:8443#mg2000")
+	if err != nil {
+		t.Fatalf("ParseNodeLink() error = %v", err)
+	}
+	if node.Type != "shadowsocks" || node.Method != "chacha20-ietf-poly1305" || node.Server != "107.149.30.19" || node.Port != 8443 || node.Name != "mg2000" {
+		t.Fatalf("unexpected Shadowsocks node: type=%q method=%q server=%q port=%d name=%q", node.Type, node.Method, node.Server, node.Port, node.Name)
 	}
 }
 
@@ -60,6 +99,18 @@ func TestParserSanitizesTUICUUIDWithUserSegment(t *testing.T) {
 	}
 	if node.UUID != uuid {
 		t.Fatalf("UUID = %q, want sanitized %q", node.UUID, uuid)
+	}
+}
+
+func TestParserAcceptsTUICAllowInsecureSnakeCase(t *testing.T) {
+	t.Parallel()
+	const uuid = "2cf8b091-58eb-40e4-8524-bc45142c400e"
+	node, err := ParseNodeLink("tuic://" + uuid + ":secret@107.149.30.19:8445?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=mg2000&allow_insecure=1#mg2000-TUIC-v5")
+	if err != nil {
+		t.Fatalf("ParseNodeLink() error = %v", err)
+	}
+	if node.Type != "tuic" || node.UUID != uuid || !node.TLS.Insecure {
+		t.Fatalf("unexpected TUIC node: type=%q uuid=%q insecure=%t", node.Type, node.UUID, node.TLS.Insecure)
 	}
 }
 

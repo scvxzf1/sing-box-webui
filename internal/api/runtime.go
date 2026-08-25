@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -24,6 +25,38 @@ func (s *Server) runtimeStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, runtime)
 }
 
+func (s *Server) runtimePreferences(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "The request method is not allowed")
+		return
+	}
+	if s.control == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "runtime_unavailable", "Runtime control is unavailable")
+		return
+	}
+	var input struct {
+		AllowLan *bool `json:"allowLan"`
+	}
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeError(w, r, http.StatusBadRequest, "request_invalid", err.Error())
+		return
+	}
+	if input.AllowLan == nil {
+		writeError(w, r, http.StatusBadRequest, "request_invalid", "allowLan is required")
+		return
+	}
+	runtime, err := s.control.SetAllowLan(r.Context(), *input.AllowLan)
+	if err != nil {
+		if errors.Is(err, control.ErrRuntimeBusy) {
+			writeError(w, r, http.StatusConflict, "runtime_busy", "Stop the proxy before changing LAN access")
+			return
+		}
+		s.writeInternalError(w, r, http.StatusUnprocessableEntity, "preferences_save_failed", "Runtime preferences could not be saved", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, runtime)
+}
+
 func (s *Server) applyRuntime(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "The request method is not allowed")
@@ -42,6 +75,10 @@ func (s *Server) applyRuntime(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	runtime, err := s.control.Apply(ctx, input)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			writeError(w, r, http.StatusConflict, "apply_canceled", "Proxy switch was canceled")
+			return
+		}
 		s.writeInternalError(w, r, http.StatusUnprocessableEntity, "apply_failed", "Proxy configuration could not be applied", err)
 		return
 	}

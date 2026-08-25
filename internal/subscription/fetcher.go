@@ -154,7 +154,7 @@ func (f *HTTPFetcher) fetch(ctx context.Context, rawURL, etag, lastModified, pat
 
 	response, err := f.client.Do(request)
 	if err != nil {
-		return nil, FetchMetadata{}, fmt.Errorf("fetch subscription: %w", err)
+		return nil, FetchMetadata{}, fmt.Errorf("fetch subscription: %w", redactURLError(err))
 	}
 	defer response.Body.Close()
 

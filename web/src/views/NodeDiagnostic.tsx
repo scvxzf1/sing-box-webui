@@ -6,6 +6,7 @@ import type { ConnectivityDiagnosticInput, ConnectivityDiagnosticResult } from '
 import { InlineError } from '../components/InlineError'
 
 type DiagnosticKind = ConnectivityDiagnosticInput['kind']
+type ActiveProxyMode = 'system-proxy' | 'tun'
 
 const providers = {
   quality: [
@@ -21,7 +22,7 @@ const providers = {
   ],
 } as const
 
-export function NodeDiagnostic({ kind, step }: { kind: DiagnosticKind; step: number }) {
+export function NodeDiagnostic({ kind, step, mode }: { kind: DiagnosticKind; step: number; mode?: ActiveProxyMode }) {
   const options = providers[kind]
   const [provider, setProvider] = useState<string>(options[0].id)
   const [result, setResult] = useState<ConnectivityDiagnosticResult | null>(null)
@@ -62,19 +63,20 @@ export function NodeDiagnostic({ kind, step }: { kind: DiagnosticKind; step: num
           <span title={selected.url}>{selected.url}</span>
         </div>
         {mutation.error && <InlineError error={mutation.error} />}
-        {result ? <DiagnosticResult kind={kind} result={result} /> : !mutation.error && <div className="muted-line">尚未检测</div>}
+        {result ? <DiagnosticResult kind={kind} result={result} mode={mode} /> : !mutation.error && <div className="muted-line">尚未检测</div>}
       </div>
     </div>
   )
 }
 
-function DiagnosticResult({ kind, result }: { kind: DiagnosticKind; result: ConnectivityDiagnosticResult }) {
+function DiagnosticResult({ kind, result, mode }: { kind: DiagnosticKind; result: ConnectivityDiagnosticResult; mode?: ActiveProxyMode }) {
   const location = [result.countryCode || result.country, result.region, result.city].filter(Boolean).join(' · ')
+  const routeLabel = mode === 'tun' ? 'TUN链路' : mode === 'system-proxy' ? '系统代理' : '当前网络'
   return (
     <div className="node-diagnostic__result" aria-live="polite">
       <div className="node-diagnostic__primary">
         <strong>{result.ip}</strong>
-        <span>{location || '位置未知'} · {result.latencyMs} ms</span>
+        <span>{location || '位置未知'} · {result.latencyMs} ms · {routeLabel}</span>
       </div>
       <div className="node-diagnostic__facts">
         {result.asn && <span><small>ASN</small>{result.asn.startsWith('AS') ? result.asn : `AS${result.asn}`}</span>}

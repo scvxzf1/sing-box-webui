@@ -53,7 +53,7 @@ export function OverviewView({ eventStream }: { eventStream: EventStreamState })
         ) : statusQuery.isError ? (
           <div className="error-state" role="alert">
             <strong>无法连接本机 API</strong>
-            <span>请确认 Go 后端正在 11872 端口运行。</span>
+            <span>请确认 Go 后端正在 33334 端口运行。</span>
           </div>
         ) : (
           <StatusGrid status={statusQuery.data} eventStream={eventStream} />

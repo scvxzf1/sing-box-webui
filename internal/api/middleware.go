@@ -21,6 +21,9 @@ func (s *Server) securityMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Request-ID", requestID)
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 
 		if !s.allowedHost(r.Host) {
 			writeError(w, r, http.StatusBadRequest, "invalid_host", "The request host is not allowed")

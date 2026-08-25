@@ -21,9 +21,12 @@ const (
 	defaultUpdateMinutes = 360
 	minUpdateMinutes     = 15
 	maxUpdateMinutes     = 7 * 24 * 60
+	MaxImportLinks       = 200
+	maxImportTextBytes   = 256 << 10
 )
 
 var ErrNotFound = errors.New("subscription not found")
+var ErrNodeNotFound = errors.New("node not found")
 
 type CreateInput struct {
 	Name                  string `json:"name"`
@@ -36,6 +39,25 @@ type UpdateInput struct {
 	Name                  *string `json:"name,omitempty"`
 	AutoUpdate            *bool   `json:"autoUpdate,omitempty"`
 	UpdateIntervalMinutes *int    `json:"updateIntervalMinutes,omitempty"`
+}
+
+type ImportNodesInput struct {
+	Links string `json:"links"`
+}
+
+type ImportNodeItem struct {
+	Line   int       `json:"line"`
+	Status string    `json:"status"`
+	Error  string    `json:"error,omitempty"`
+	Node   *NodeView `json:"node,omitempty"`
+}
+
+type ImportNodesResult struct {
+	AddedCount     int              `json:"addedCount"`
+	DuplicateCount int              `json:"duplicateCount"`
+	InvalidCount   int              `json:"invalidCount"`
+	Items          []ImportNodeItem `json:"items"`
+	Subscription   View             `json:"subscription"`
 }
 
 type RuleSink interface {
@@ -167,6 +189,29 @@ func (m *Manager) Get(id string) (View, error) {
 	return toView(m.items[index], true), nil
 }
 
+func (m *Manager) NodeLink(subscriptionID, nodeID string) (NodeLink, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	index := m.indexOf(subscriptionID)
+	if index < 0 {
+		return NodeLink{}, ErrNotFound
+	}
+	for _, node := range m.items[index].Nodes {
+		if node.ID != nodeID {
+			continue
+		}
+		if node.OriginalLink != "" {
+			return NodeLink{Link: node.OriginalLink, Source: NodeLinkSourceOriginal}, nil
+		}
+		link, err := EncodeNodeLink(node)
+		if err != nil {
+			return NodeLink{}, err
+		}
+		return NodeLink{Link: link, Source: NodeLinkSourceGenerated}, nil
+	}
+	return NodeLink{}, ErrNodeNotFound
+}
+
 func (m *Manager) Create(ctx context.Context, input CreateInput) (View, error) {
 	input.Name = strings.TrimSpace(input.Name)
 	input.URL = strings.TrimSpace(input.URL)
@@ -247,6 +292,112 @@ func (m *Manager) Update(id string, input UpdateInput) (View, error) {
 		return View{}, err
 	}
 	return toView(m.items[index], true), nil
+}
+
+func (m *Manager) ImportNodes(id string, input ImportNodesInput) (ImportNodesResult, error) {
+	if len(input.Links) > maxImportTextBytes {
+		return ImportNodesResult{}, fmt.Errorf("node link input is too large")
+	}
+	type parsedItem struct {
+		line int
+		node Node
+		err  error
+	}
+	parsed := make([]parsedItem, 0)
+	normalized := strings.ReplaceAll(input.Links, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	for lineIndex, raw := range strings.Split(normalized, "\n") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if len(parsed) >= MaxImportLinks {
+			return ImportNodesResult{}, fmt.Errorf("a maximum of %d node links can be imported at once", MaxImportLinks)
+		}
+		node, err := ParseNodeLink(raw)
+		parsed = append(parsed, parsedItem{line: lineIndex + 1, node: node, err: err})
+	}
+	if len(parsed) == 0 {
+		return ImportNodesResult{}, fmt.Errorf("at least one node link is required")
+	}
+
+	release, err := m.acquireRefreshLock(id)
+	if err != nil {
+		return ImportNodesResult{}, err
+	}
+	defer release()
+
+	m.mu.Lock()
+	index := m.indexOf(id)
+	if index < 0 {
+		m.mu.Unlock()
+		return ImportNodesResult{}, ErrNotFound
+	}
+	previousNodes := append([]Node(nil), m.items[index].Nodes...)
+	previousManualIDs := append([]string(nil), m.items[index].ManualNodeIDs...)
+	previousSelection := m.items[index].SelectedNodeID
+	existing := make(map[string]Node, len(previousNodes))
+	for _, node := range previousNodes {
+		existing[node.ID] = node
+	}
+	manualIDs := make(map[string]struct{}, len(previousManualIDs))
+	for _, nodeID := range previousManualIDs {
+		manualIDs[nodeID] = struct{}{}
+	}
+
+	result := ImportNodesResult{Items: make([]ImportNodeItem, 0, len(parsed))}
+	changed := false
+	for _, item := range parsed {
+		if item.err != nil {
+			result.InvalidCount++
+			result.Items = append(result.Items, ImportNodeItem{Line: item.line, Status: "invalid", Error: item.err.Error()})
+			continue
+		}
+		if _, duplicate := existing[item.node.ID]; duplicate {
+			result.DuplicateCount++
+			for nodeIndex := range m.items[index].Nodes {
+				if m.items[index].Nodes[nodeIndex].ID == item.node.ID {
+					m.items[index].Nodes[nodeIndex] = item.node
+					break
+				}
+			}
+			existing[item.node.ID] = item.node
+			view := toNodeView(item.node, m.items[index].SelectedNodeID)
+			result.Items = append(result.Items, ImportNodeItem{Line: item.line, Status: "duplicate", Node: &view})
+			if _, tracked := manualIDs[item.node.ID]; !tracked {
+				m.items[index].ManualNodeIDs = append(m.items[index].ManualNodeIDs, item.node.ID)
+				manualIDs[item.node.ID] = struct{}{}
+			}
+			changed = true
+			continue
+		}
+		m.items[index].Nodes = append(m.items[index].Nodes, item.node)
+		m.items[index].ManualNodeIDs = append(m.items[index].ManualNodeIDs, item.node.ID)
+		existing[item.node.ID] = item.node
+		manualIDs[item.node.ID] = struct{}{}
+		if m.items[index].SelectedNodeID == "" {
+			m.items[index].SelectedNodeID = item.node.ID
+		}
+		view := toNodeView(item.node, m.items[index].SelectedNodeID)
+		result.Items = append(result.Items, ImportNodeItem{Line: item.line, Status: "added", Node: &view})
+		result.AddedCount++
+		changed = true
+	}
+	if changed {
+		if err := m.persistLocked(); err != nil {
+			m.items[index].Nodes = previousNodes
+			m.items[index].ManualNodeIDs = previousManualIDs
+			m.items[index].SelectedNodeID = previousSelection
+			m.mu.Unlock()
+			return ImportNodesResult{}, err
+		}
+	}
+	result.Subscription = toView(m.items[index], true)
+	m.mu.Unlock()
+	if changed {
+		m.publish("nodes.imported", map[string]any{"subscriptionId": id, "addedCount": result.AddedCount, "duplicateCount": result.DuplicateCount})
+	}
+	return result, nil
 }
 
 func (m *Manager) Delete(id string) error {
@@ -437,15 +588,13 @@ func (m *Manager) refresh(ctx context.Context, id string, conditional bool) erro
 	}
 	content, metadata, err := m.fetchWithFallback(ctx, item.URL, etag, lastModified)
 	if err != nil {
-		m.recordRefreshError(id, err)
-		return err
+		return m.recordRefreshError(id, err)
 	}
 	var result ParseResult
 	if !metadata.NotModified {
 		result, err = m.parser.Parse(content)
 		if err != nil {
-			m.recordRefreshError(id, err)
-			return err
+			return m.recordRefreshError(id, err)
 		}
 	}
 
@@ -459,16 +608,17 @@ func (m *Manager) refresh(ctx context.Context, id string, conditional bool) erro
 	now := time.Now().UTC()
 	if !metadata.NotModified {
 		previousSelection := m.items[index].SelectedNodeID
-		m.items[index].Nodes = result.Nodes
+		manualNodes := nodesByID(previous.Nodes, previous.ManualNodeIDs)
+		m.items[index].Nodes = mergeNodeLists(result.Nodes, manualNodes)
 		m.items[index].SelectedNodeID = ""
-		for _, node := range result.Nodes {
+		for _, node := range m.items[index].Nodes {
 			if node.ID == previousSelection {
 				m.items[index].SelectedNodeID = previousSelection
 				break
 			}
 		}
-		if m.items[index].SelectedNodeID == "" && len(result.Nodes) > 0 {
-			m.items[index].SelectedNodeID = result.Nodes[0].ID
+		if m.items[index].SelectedNodeID == "" && len(m.items[index].Nodes) > 0 {
+			m.items[index].SelectedNodeID = m.items[index].Nodes[0].ID
 		}
 	}
 	m.items[index].LastUpdated = &now
@@ -493,18 +643,15 @@ func (m *Manager) refresh(ctx context.Context, id string, conditional bool) erro
 	m.mu.Unlock()
 	if poolSink != nil {
 		if err := poolSink.ReconcileSubscriptionNodes(id, previous.Nodes, currentNodes); err != nil {
-			m.recordRefreshError(id, fmt.Errorf("subscription updated but node pool reconciliation failed: %w", err))
-			return err
+			return m.recordRefreshError(id, fmt.Errorf("subscription updated but node pool reconciliation failed: %w", err))
 		}
 	}
 	if !metadata.NotModified && ruleSink != nil {
 		if err := ruleSink.SyncSubscriptionRules(id, name, result.ImportedRules); err != nil {
-			m.recordRefreshError(id, fmt.Errorf("subscription updated but rules sync failed: %w", err))
-			return err
+			return m.recordRefreshError(id, fmt.Errorf("subscription updated but rules sync failed: %w", err))
 		}
 		if err := ruleSink.ReloadRules(); err != nil {
-			m.recordRefreshError(id, err)
-			return err
+			return m.recordRefreshError(id, err)
 		}
 	}
 	m.publish("subscription.updated", map[string]any{"subscriptionId": id, "nodeCount": nodeCount, "path": metadata.Path})
@@ -618,16 +765,19 @@ func (m *Manager) proxy() FetchClient {
 	return fetcher
 }
 
-func (m *Manager) recordRefreshError(id string, refreshError error) {
+func (m *Manager) recordRefreshError(id string, refreshError error) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	index := m.indexOf(id)
 	if index < 0 {
-		return
+		return refreshError
 	}
-	m.items[index].LastError = refreshError.Error()
+	refreshError = redactError(refreshError, m.items[index].URL)
+	message := refreshError.Error()
+	m.items[index].LastError = message
 	_ = m.persistLocked()
-	m.publish("subscription.failed", map[string]string{"subscriptionId": id, "error": refreshError.Error()})
+	m.publish("subscription.failed", map[string]string{"subscriptionId": id, "error": message})
+	return refreshError
 }
 
 func (m *Manager) load() error {
@@ -641,6 +791,17 @@ func (m *Manager) load() error {
 	}
 	if err := json.Unmarshal(content, &m.items); err != nil {
 		return fmt.Errorf("parse subscriptions: %w", err)
+	}
+	changed := false
+	for index := range m.items {
+		redacted := redactURLInText(m.items[index].LastError, m.items[index].URL)
+		if redacted != m.items[index].LastError {
+			m.items[index].LastError = redacted
+			changed = true
+		}
+	}
+	if changed {
+		return m.persistLocked()
 	}
 	return nil
 }
@@ -684,6 +845,35 @@ func (m *Manager) persistLocked() error {
 		_ = directory.Close()
 	}
 	return nil
+}
+
+func nodesByID(nodes []Node, ids []string) []Node {
+	byID := make(map[string]Node, len(nodes))
+	for _, node := range nodes {
+		byID[node.ID] = node
+	}
+	result := make([]Node, 0, len(ids))
+	for _, id := range ids {
+		if node, ok := byID[id]; ok {
+			result = append(result, node)
+		}
+	}
+	return result
+}
+
+func mergeNodeLists(primary, additional []Node) []Node {
+	result := make([]Node, 0, len(primary)+len(additional))
+	seen := make(map[string]struct{}, len(primary)+len(additional))
+	for _, nodes := range [][]Node{primary, additional} {
+		for _, node := range nodes {
+			if _, exists := seen[node.ID]; exists {
+				continue
+			}
+			seen[node.ID] = struct{}{}
+			result = append(result, node)
+		}
+	}
+	return result
 }
 
 func (m *Manager) indexOf(id string) int {

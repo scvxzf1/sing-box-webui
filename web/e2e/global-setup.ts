@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 
 export default async function globalSetup(config: FullConfig) {
-  const baseURL = String(config.projects[0]?.use.baseURL ?? 'http://127.0.0.1:5173')
+  const baseURL = String(config.projects[0]?.use.baseURL ?? 'http://127.0.0.1:33333')
   const storageState = join(tmpdir(), 'sing-box-webui-playwright-storage.json')
   const context = await request.newContext({ baseURL })
   try {

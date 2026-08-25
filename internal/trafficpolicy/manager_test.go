@@ -104,6 +104,50 @@ func TestDisablingActivePolicyRestoresOriginalPool(t *testing.T) {
 	}
 }
 
+func TestUpdateRejectsConfigurationChangesDuringPoolTransition(t *testing.T) {
+	manager, err := Open(t.TempDir(), &fakeController{}, fakePools{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := Config{
+		Enabled: true, DownloadPoolID: "download", TriggerRateBytesPerSecond: 64 << 10, TriggerDurationSeconds: 2,
+		ReleaseRateBytesPerSecond: 1024, ReleaseDurationSeconds: 5, CooldownSeconds: 10,
+	}
+	for _, state := range []string{StateTriggering, StateRecovering} {
+		manager.mu.Lock()
+		manager.snapshot.State = state
+		manager.mu.Unlock()
+		if _, err := manager.Update(context.Background(), input); err == nil {
+			t.Fatalf("Update() accepted configuration while state = %s", state)
+		}
+	}
+	if manager.Get().Config != defaultConfig() {
+		t.Fatalf("configuration changed during transition: %#v", manager.Get().Config)
+	}
+}
+
+func TestDisablingPolicyClearsStaleTrafficMeasurements(t *testing.T) {
+	manager, err := Open(t.TempDir(), &fakeController{}, fakePools{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	manager.snapshot.State = StateMonitoring
+	manager.snapshot.CurrentDownloadBPS = 8 << 20
+	manager.snapshot.ActiveConnections = 7
+	manager.snapshot.TriggerProgressSeconds = 3
+	manager.mu.Unlock()
+	input := defaultConfig()
+	input.Enabled = false
+	if _, err := manager.Update(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := manager.Get()
+	if snapshot.CurrentDownloadBPS != 0 || snapshot.ActiveConnections != 0 || snapshot.TriggerProgressSeconds != 0 {
+		t.Fatalf("stale traffic measurements remain after disabling: %#v", snapshot)
+	}
+}
+
 func runningPool(id, name string, at time.Time, download int64) control.Runtime {
 	return control.Runtime{
 		State: supervisor.StateRunning, Mode: singbox.ModeSystemProxy, TargetType: "pool", PoolID: id, PoolName: name,

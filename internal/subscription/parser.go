@@ -25,6 +25,16 @@ type ParseResult struct {
 
 type Parser struct{}
 
+// ParseNodeLink parses one proxy URI and never includes the source URI in an
+// error, because it may contain credentials.
+func ParseNodeLink(raw string) (Node, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return Node{}, fmt.Errorf("node link is empty")
+	}
+	return parseURI(raw)
+}
+
 func (Parser) Parse(content []byte) (ParseResult, error) {
 	if len(content) == 0 {
 		return ParseResult{}, ErrNoNodes
@@ -79,16 +89,25 @@ func parseURI(raw string) (Node, error) {
 		return Node{}, fmt.Errorf("unsupported subscription line")
 	}
 	scheme := strings.ToLower(raw[:schemeEnd])
+	var (
+		node Node
+		err  error
+	)
 	switch scheme {
 	case "ss":
-		return parseShadowsocks(raw)
+		node, err = parseShadowsocks(raw)
 	case "vmess":
-		return parseVMess(raw)
+		node, err = parseVMess(raw)
 	case "socks", "socks5", "http", "https", "trojan", "vless", "hysteria2", "hy2", "tuic":
-		return parseStandardURI(raw, scheme)
+		node, err = parseStandardURI(raw, scheme)
 	default:
 		return Node{}, fmt.Errorf("unsupported protocol %q", scheme)
 	}
+	if err != nil {
+		return Node{}, err
+	}
+	node.OriginalLink = raw
+	return node, nil
 }
 
 func parseStandardURI(raw, scheme string) (Node, error) {
@@ -114,7 +133,7 @@ func parseStandardURI(raw, scheme string) (Node, error) {
 		TLS: TLS{
 			Enabled:         query.Get("security") == "tls" || query.Get("security") == "reality" || scheme == "trojan" || scheme == "hysteria2" || scheme == "hy2" || scheme == "tuic",
 			ServerName:      firstNonEmpty(query.Get("sni"), query.Get("serverName"), query.Get("peer")),
-			Insecure:        parseBool(firstNonEmpty(query.Get("allowInsecure"), query.Get("insecure"))),
+			Insecure:        parseBool(firstNonEmpty(query.Get("allowInsecure"), query.Get("allow_insecure"), query.Get("insecure"))),
 			ALPN:            splitCSV(query.Get("alpn")),
 			UTLSFingerprint: firstNonEmpty(query.Get("fp"), query.Get("fingerprint")),
 			Reality: Reality{

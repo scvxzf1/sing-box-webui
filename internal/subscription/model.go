@@ -15,6 +15,7 @@ type Subscription struct {
 	LastFetchPath         string     `json:"lastFetchPath,omitempty"`
 	ETag                  string     `json:"etag,omitempty"`
 	LastModified          string     `json:"lastModified,omitempty"`
+	ManualNodeIDs         []string   `json:"manualNodeIds,omitempty"`
 	Nodes                 []Node     `json:"nodes"`
 }
 
@@ -34,6 +35,7 @@ type ImportedRule struct {
 
 type Node struct {
 	ID                string    `json:"id"`
+	OriginalLink      string    `json:"originalLink,omitempty"`
 	Name              string    `json:"name"`
 	Type              string    `json:"type"`
 	Server            string    `json:"server"`
@@ -111,23 +113,27 @@ func toView(subscription Subscription, includeNodes bool) View {
 		Active:                subscription.Active,
 		SelectedNodeID:        subscription.SelectedNodeID,
 		LastUpdated:           subscription.LastUpdated,
-		LastError:             subscription.LastError,
+		LastError:             redactURLInText(subscription.LastError, subscription.URL),
 		LastFetchPath:         subscription.LastFetchPath,
 		NodeCount:             len(subscription.Nodes),
 	}
 	if includeNodes {
 		view.Nodes = make([]NodeView, 0, len(subscription.Nodes))
 		for _, node := range subscription.Nodes {
-			view.Nodes = append(view.Nodes, NodeView{
-				ID:       node.ID,
-				Name:     node.Name,
-				Type:     node.Type,
-				Server:   node.Server,
-				Port:     node.Port,
-				TLS:      node.TLS.Enabled,
-				Selected: node.ID == subscription.SelectedNodeID,
-			})
+			view.Nodes = append(view.Nodes, toNodeView(node, subscription.SelectedNodeID))
 		}
 	}
 	return view
+}
+
+func toNodeView(node Node, selectedNodeID string) NodeView {
+	return NodeView{
+		ID:       node.ID,
+		Name:     node.Name,
+		Type:     node.Type,
+		Server:   node.Server,
+		Port:     node.Port,
+		TLS:      node.TLS.Enabled,
+		Selected: node.ID == selectedNodeID,
+	}
 }

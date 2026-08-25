@@ -16,7 +16,9 @@ type QuickTestColumns = 1 | 2 | 3 | 4
 
 const columnsStorageKey = 'sing-box-webui:quick-test-columns'
 
-export function QuickTest({ step }: { step: number }) {
+type ActiveProxyMode = 'system-proxy' | 'tun'
+
+export function QuickTest({ step, mode }: { step: number; mode?: ActiveProxyMode }) {
   const queryClient = useQueryClient()
   const targetsQuery = useQuery({ queryKey: ['connectivity'], queryFn: ({ signal }) => listConnectivityTargets(signal) })
   const [results, setResults] = useState<ResultMap>({})
@@ -197,7 +199,7 @@ export function QuickTest({ step }: { step: number }) {
                     <span className="quick-test__url">{target.url}</span>
                   </div>
                   <div className="quick-test__results">
-                    {result ? <PathBadges result={result} /> : <span className="quick-test__pending">未测试</span>}
+                    {result ? <PathBadges result={result} tunneled={mode === 'tun'} /> : <span className="quick-test__pending">未测试</span>}
                   </div>
                   <div className="quick-test__row-actions">
                     <button
@@ -228,10 +230,10 @@ export function QuickTest({ step }: { step: number }) {
   )
 }
 
-function PathBadges({ result }: { result: ConnectivityResult }) {
+function PathBadges({ result, tunneled }: { result: ConnectivityResult; tunneled: boolean }) {
   return (
     <>
-      <PathBadge label="直连" value={result.direct} />
+      <PathBadge label={tunneled ? 'TUN链路' : '直连'} value={result.direct} />
       {result.proxy && <PathBadge label="代理" value={result.proxy} />}
     </>
   )

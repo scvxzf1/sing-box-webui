@@ -10,6 +10,16 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MANAGED_LINK="${SING_BOX_WEBUI_DATA_DIR:-${ROOT_DIR}/var/data}/core/sing-box"
 BINARY="${SING_BOX_BIN:-${MANAGED_LINK}}"
 
+if command -v curl >/dev/null 2>&1; then
+  API_STATUS="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 2 \
+    http://127.0.0.1:33334/api/v1/runtime 2>/dev/null || true)"
+  if [[ "${API_STATUS}" == "200" || "${API_STATUS}" == "401" ]]; then
+    printf 'sing-box WebUI is already running\n'
+    printf 'WebUI: http://127.0.0.1:33333\n'
+    exit 0
+  fi
+fi
+
 if [[ ! -x "${BINARY}" ]]; then
   printf 'error: sing-box executable not found: %s\n' "${BINARY}" >&2
   printf 'start ./scripts/dev.sh once to install the managed core, then retry\n' >&2

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"sing-box-webui/internal/proxychain"
 	"sing-box-webui/internal/subscription"
 )
 
@@ -44,6 +45,18 @@ func (runner fakeRunner) Test(context.Context, []subscription.Node) ([]Result, e
 	return runner.results, runner.err
 }
 
+type chainRunner struct {
+	results []Result
+}
+
+func (runner chainRunner) Test(context.Context, []subscription.Node) ([]Result, error) {
+	return nil, nil
+}
+
+func (runner chainRunner) TestChain(context.Context, []subscription.Node, subscription.Node) ([]Result, error) {
+	return runner.results, nil
+}
+
 func TestServiceReturnsRunnerResults(t *testing.T) {
 	t.Parallel()
 	results := []Result{{NodeID: "first", Name: "First", Status: StatusOK}, {NodeID: "second", Name: "Second", Status: StatusTimeout}}
@@ -58,6 +71,20 @@ func TestServiceReturnsRunnerResults(t *testing.T) {
 	}
 	if len(response.Items) != 2 || response.Items[0].NodeID != "first" || response.Items[1].NodeID != "second" {
 		t.Fatalf("unexpected results: %+v", response.Items)
+	}
+}
+
+func TestServiceAddsFullPathToChainResults(t *testing.T) {
+	t.Parallel()
+	entry := subscription.Node{ID: "entry", Name: "Entry"}
+	exit := subscription.Node{ID: "exit", Name: "Exit"}
+	service := &Service{runner: chainRunner{results: []Result{{NodeID: entry.ID, Name: entry.Name, Status: StatusOK}}}}
+	response, err := service.TestChain(context.Background(), proxychain.Resolved{EntryNode: &entry, EntryNodes: []subscription.Node{entry}, ExitNode: exit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Items) != 1 || len(response.Items[0].Path) != 2 || response.Items[0].Path[0] != "Entry" || response.Items[0].Path[1] != "Exit" {
+		t.Fatalf("chain result path = %+v", response.Items)
 	}
 }
 

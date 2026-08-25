@@ -26,7 +26,7 @@ func TestManagerSelectsHealthyTargetAndQuarantinesFailedTarget(t *testing.T) {
 			response.WriteHeader(http.StatusServiceUnavailable)
 		case request.Method == http.MethodGet && strings.Contains(request.URL.Path, "pool-member-001"):
 			_ = json.NewEncoder(response).Encode(map[string]int{"delay": 42})
-		case request.Method == http.MethodPut && request.URL.Path == "/proxies/proxy":
+		case request.Method == http.MethodPut && request.URL.Path == "/proxies/runtime-pool-000":
 			var input map[string]string
 			_ = json.NewDecoder(request.Body).Decode(&input)
 			mu.Lock()
@@ -42,7 +42,7 @@ func TestManagerSelectsHealthyTargetAndQuarantinesFailedTarget(t *testing.T) {
 	manager := NewManager()
 	t.Cleanup(manager.Stop)
 	err := manager.Start(Config{
-		Address: strings.TrimPrefix(server.URL, "http://"), Secret: "test-secret",
+		Address: strings.TrimPrefix(server.URL, "http://"), Secret: "test-secret", SelectorTag: "runtime-pool-000",
 		ProbeURLs: []string{"https://example.com/generate_204"}, Interval: time.Hour, Tolerance: 80 * time.Millisecond, IdleTimeout: 2 * time.Hour,
 		HighLatencyThreshold: time.Second, ConsecutiveFailures: 1, RecoverySuccesses: 2, MaxBackoff: time.Minute,
 		Targets: []Target{
@@ -142,6 +142,83 @@ func TestBestSelectionNeverPrefersMissingLatency(t *testing.T) {
 	}
 	if selected := manager.bestSelectionLocked(); selected != "known" {
 		t.Fatalf("selection = %q, want measured target", selected)
+	}
+}
+
+func TestBestSelectionBlocksMeasuredTargetsWithNoPassedTests(t *testing.T) {
+	manager := NewManager()
+	manager.members = map[string]*memberState{
+		"a": {target: Target{Tag: "a"}, status: StatusDegraded, totalTests: 3},
+		"b": {target: Target{Tag: "b"}, status: StatusDegraded, totalTests: 3},
+	}
+	if selected := manager.bestSelectionLocked(); selected != "block" {
+		t.Fatalf("selection = %q, want fail-closed block", selected)
+	}
+}
+
+func TestInitialSelectionPrefersMorePassedQuickTests(t *testing.T) {
+	var mu sync.Mutex
+	selected := ""
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.URL.Path == "/proxies":
+			_, _ = response.Write([]byte(`{"proxies":{}}`))
+		case request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/delay"):
+			targetURL := request.URL.Query().Get("url")
+			isFirst := strings.Contains(request.URL.Path, "pool-member-000")
+			if (isFirst && strings.HasSuffix(targetURL, "/three")) || (!isFirst && !strings.HasSuffix(targetURL, "/one")) {
+				response.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			delay := 10
+			if isFirst {
+				delay = 500
+			}
+			_ = json.NewEncoder(response).Encode(map[string]int{"delay": delay})
+		case request.Method == http.MethodPut:
+			var input map[string]string
+			_ = json.NewDecoder(request.Body).Decode(&input)
+			mu.Lock()
+			selected = input["name"]
+			mu.Unlock()
+			response.WriteHeader(http.StatusNoContent)
+		default:
+			response.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	manager := NewManager()
+	t.Cleanup(manager.Stop)
+	err := manager.Start(Config{
+		Address: strings.TrimPrefix(server.URL, "http://"), Secret: "secret",
+		ProbeURLs: []string{"https://quick.test/one", "https://quick.test/two", "https://quick.test/three"},
+		Interval:  time.Hour, Tolerance: time.Second, IdleTimeout: 2 * time.Hour,
+		HighLatencyThreshold: time.Second, ConsecutiveFailures: 1, RecoverySuccesses: 1, MaxBackoff: time.Minute,
+		Targets: []Target{
+			{Tag: "pool-member-000", NodeID: "more", Name: "More passes"},
+			{Tag: "pool-member-001", NodeID: "faster", Name: "Faster but fewer"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	gotSelection := selected
+	mu.Unlock()
+	if gotSelection != "pool-member-000" {
+		t.Fatalf("initial selection = %q, want node with more passed tests", gotSelection)
+	}
+	snapshot := manager.Snapshot()
+	if snapshot.SelectedNodeID != "more" {
+		t.Fatalf("snapshot selected node = %q, want more", snapshot.SelectedNodeID)
+	}
+	counts := map[string][2]int{}
+	for _, member := range snapshot.Members {
+		counts[member.NodeID] = [2]int{member.PassedTests, member.TotalTests}
+	}
+	if counts["more"] != [2]int{2, 3} || counts["faster"] != [2]int{1, 3} {
+		t.Fatalf("unexpected quick-test counts: %+v", counts)
 	}
 }
 
