@@ -1288,7 +1288,7 @@ export interface components {
             /** @enum {string} */
             mode?: "system-proxy" | "tun";
             /** @enum {string} */
-            targetType?: "node" | "pool" | "chain";
+            targetType?: "node" | "pool" | "chain" | "direct";
             subscriptionId?: string;
             nodeId?: string;
             nodeName?: string;
@@ -1369,6 +1369,8 @@ export interface components {
             nodeId?: string;
             poolId?: string;
             chainId?: string;
+            /** @enum {boolean} */
+            direct?: true;
             /** @enum {string} */
             mode: "system-proxy" | "tun";
             /**
@@ -1376,7 +1378,7 @@ export interface components {
              * @default false
              */
             allowLan: boolean;
-        } & (unknown | unknown | unknown);
+        } & (unknown | unknown | unknown | unknown);
         UpdateRuntimePreferences: {
             /** @description Persist LAN access for future proxy starts. */
             allowLan: boolean;

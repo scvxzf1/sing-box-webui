@@ -2360,7 +2360,7 @@ components:
           enum: [system-proxy, tun]
         targetType:
           type: string
-          enum: [node, pool, chain]
+          enum: [node, pool, chain, direct]
         subscriptionId:
           type: string
         nodeId:
@@ -2493,6 +2493,7 @@ components:
         - required: [subscriptionId, nodeId]
         - required: [poolId]
         - required: [chainId]
+        - required: [direct]
       properties:
         subscriptionId:
           type: string
@@ -2502,6 +2503,9 @@ components:
           type: string
         chainId:
           type: string
+        direct:
+          type: boolean
+          enum: [true]
         mode:
           type: string
           enum: [system-proxy, tun]

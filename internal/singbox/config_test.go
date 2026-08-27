@@ -179,6 +179,30 @@ func TestBuildSelectableConfigCompilesRootAndPoolSelectors(t *testing.T) {
 	}
 }
 
+func TestBuildSelectableConfigSupportsDirectWithoutNodes(t *testing.T) {
+	t.Parallel()
+	content, err := BuildSelectableConfig(nil, nil, nil, nil, "direct", ModeSystemProxy, 2080, nil,
+		ControllerOptions{}, dnsprofile.DefaultProfile(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(content, &config); err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]any
+	for _, raw := range config["outbounds"].([]any) {
+		outbound := raw.(map[string]any)
+		if outbound["tag"] == "proxy" {
+			root = outbound
+			break
+		}
+	}
+	if root == nil || root["default"] != "direct" {
+		t.Fatalf("root selector = %#v, want direct default", root)
+	}
+}
+
 func TestBuildSelectableConfigCompilesNodeAndPoolChains(t *testing.T) {
 	t.Parallel()
 	nodes := []RuntimeNodeTarget{

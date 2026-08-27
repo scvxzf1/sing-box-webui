@@ -202,9 +202,8 @@ sudo go run ./cmd/webui
 sudo ./scripts/dev.sh
 ```
 
-TUN 开发开始前，必须先完成 [ADR-0001](adr/README.md#阻塞性决策队列)。临时人工实验也应只提升明确
-构建出的 Core/sing-box 二进制，而不是整个源码工具链；实验步骤不得进入默认开发
-命令。
+TUN 开发必须遵守已接受的 [ADR-0001](adr/0001-linux-tun-privilege.md)。只提升明确构建
+出的 Core/sing-box 二进制，而不是整个源码工具链；授权步骤不得进入默认开发命令。
 
 本机实验使用 `./scripts/dev-tun.sh` 启动。该脚本仍以普通用户运行，仅设置功能开关并
 验证当前 sing-box 文件已有 `CAP_NET_ADMIN`，绝不调用 `sudo` 或 `pkexec`。首次授权及

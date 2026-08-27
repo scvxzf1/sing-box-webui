@@ -226,7 +226,7 @@ func BuildPoolConfigWithDNS(nodes []subscription.Node, mode ProxyMode, mixedPort
 // one runtime. Changing the root "proxy" selector can then redirect new
 // connections without restarting sing-box or disturbing established streams.
 func BuildSelectableConfig(nodes []RuntimeNodeTarget, pools []RuntimePoolTarget, chains []RuntimeChainTarget, channels []RuntimeChannelTarget, initialTargetTag string, mode ProxyMode, mixedPort uint16, routeRules []map[string]any, controller ControllerOptions, dns dnsprofile.Profile, allowLan bool) ([]byte, error) {
-	if len(nodes) == 0 {
+	if len(nodes) == 0 && initialTargetTag != "direct" {
 		return nil, fmt.Errorf("at least one runtime node is required")
 	}
 	if mode != ModeSystemProxy && mode != ModeTUN {
@@ -389,6 +389,8 @@ func BuildSelectableConfig(nodes []RuntimeNodeTarget, pools []RuntimePoolTarget,
 		rootTargets = append(rootTargets, target.Tag)
 		rootTargetSet[target.Tag] = struct{}{}
 	}
+	rootTargets = append(rootTargets, "direct")
+	rootTargetSet["direct"] = struct{}{}
 	if _, exists := rootTargetSet[initialTargetTag]; !exists {
 		return nil, fmt.Errorf("initial runtime target is unavailable")
 	}

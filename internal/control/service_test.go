@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"sing-box-webui/internal/nodepool"
+	"sing-box-webui/internal/subscription"
 	"sing-box-webui/internal/supervisor"
 )
 
@@ -52,6 +54,58 @@ func TestHotSwitchChangesRootSelectorAndPreservesRuntimeStart(t *testing.T) {
 	}
 	if runtime.NodeID != "new" || !runtime.StartedAt.Equal(startedAt) || runtime.State != supervisor.StateRunning {
 		t.Fatalf("runtime after hot switch = %+v", runtime)
+	}
+}
+
+func TestHotSwitchTargetDoesNotRepeatProbeURLDNSValidation(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	subscriptionDirectory := filepath.Join(root, "subscriptions")
+	if err := os.MkdirAll(subscriptionDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	nodes := []subscription.Node{
+		{ID: "node-a", Name: "A", Type: "shadowsocks", Server: "1.1.1.1", Port: 443},
+		{ID: "node-b", Name: "B", Type: "shadowsocks", Server: "8.8.8.8", Port: 443},
+	}
+	content, err := json.Marshal([]subscription.Subscription{{ID: "sub", Name: "Test", Nodes: nodes}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subscriptionDirectory, "subscriptions.json"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	subscriptions, err := subscription.OpenManager(subscriptionDirectory, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pools, err := nodepool.OpenManager(filepath.Join(root, "pools"), subscriptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pools.Create(nodepool.CreateInput{
+		Name: "Offline DNS", ProbeURL: "https://hot-switch.invalid/generate_204",
+		Members: []nodepool.Member{{SubscriptionID: "sub", NodeID: "node-a"}, {SubscriptionID: "sub", NodeID: "node-b"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedPool, members, _, err := pools.ResolveWithMembers(pool.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := runtimeCatalogTarget{
+		Tag: "runtime-pool-000", Signature: poolSignature(resolvedPool, members),
+		Runtime: Runtime{TargetType: "pool", PoolID: pool.ID, PoolName: pool.Name},
+	}
+	service := &Service{
+		subscriptions: subscriptions, pools: pools,
+		runtimeCatalog: map[string]runtimeCatalogTarget{poolTargetKey(pool.ID): want},
+	}
+
+	got, available := service.hotSwitchTarget(context.Background(), ApplyInput{PoolID: pool.ID})
+	if !available || got.Tag != want.Tag {
+		t.Fatalf("hotSwitchTarget() = %+v, %v; want catalog target without DNS lookup", got, available)
 	}
 }
 
@@ -101,7 +155,6 @@ func TestStopTerminatesCoreWhenProxyRestoreFails(t *testing.T) {
 }
 
 func TestSupervisorWatcherCleansUpUnexpectedExit(t *testing.T) {
-	t.Parallel()
 	manager := startTestSupervisor(t, "sleep 1; exit 1")
 	proxy := &fakeSystemProxy{}
 	service := &Service{
@@ -111,7 +164,7 @@ func TestSupervisorWatcherCleansUpUnexpectedExit(t *testing.T) {
 	}
 	generation := manager.Snapshot().Generation
 	go service.watchSupervisor(generation)
-	deadline := time.Now().Add(4 * time.Second)
+	deadline := time.Now().Add(7 * time.Second)
 	for time.Now().Before(deadline) {
 		service.mu.RLock()
 		state := service.runtime.State
@@ -122,6 +175,40 @@ func TestSupervisorWatcherCleansUpUnexpectedExit(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("watcher did not clean up: runtime=%+v restores=%d", service.runtime, proxy.restoreCount())
+}
+
+func TestSupervisorWatcherKeepsSystemProxyDuringRecovery(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "crashed-once")
+	body := "if [ ! -f " + shellQuote(marker) + " ]; then touch " + shellQuote(marker) + "; sleep 1; exit 1; fi; while :; do sleep 1; done"
+	manager := startTestSupervisor(t, body)
+	proxy := &fakeSystemProxy{}
+	service := &Service{
+		supervisor:  manager,
+		systemProxy: proxy,
+		runtime:     Runtime{State: supervisor.StateRunning},
+	}
+	generation := manager.Snapshot().Generation
+	initialPID := manager.Snapshot().PID
+	go service.watchSupervisor(generation)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot := manager.Snapshot()
+		if snapshot.State == supervisor.StateRunning && snapshot.PID != initialPID {
+			if got := proxy.restoreCount(); got != 0 {
+				t.Fatalf("system proxy restored %d times during successful recovery", got)
+			}
+			service.mu.RLock()
+			state := service.runtime.State
+			service.mu.RUnlock()
+			if state == supervisor.StateFailed {
+				t.Fatal("runtime entered failed during successful recovery")
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("supervisor did not recover: initialPID=%d snapshot=%+v restores=%d", initialPID, manager.Snapshot(), proxy.restoreCount())
 }
 
 func TestStopCancelsRunningApplyOperation(t *testing.T) {
@@ -186,4 +273,8 @@ func startTestSupervisor(t *testing.T, body string) *supervisor.Manager {
 		_, _ = manager.Stop(ctx)
 	})
 	return manager
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }

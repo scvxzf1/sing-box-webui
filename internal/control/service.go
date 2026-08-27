@@ -64,6 +64,7 @@ type ApplyInput struct {
 	NodeID         string            `json:"nodeId,omitempty"`
 	PoolID         string            `json:"poolId,omitempty"`
 	ChainID        string            `json:"chainId,omitempty"`
+	Direct         bool              `json:"direct,omitempty"`
 	Mode           singbox.ProxyMode `json:"mode"`
 	AllowLan       bool              `json:"allowLan"`
 }
@@ -191,18 +192,27 @@ func (s *Service) Status(ctx context.Context) Runtime {
 func (s *Service) Apply(ctx context.Context, input ApplyInput) (Runtime, error) {
 	return s.runApplyOperation(ctx, func(operationCtx context.Context) (Runtime, error) {
 		if s.canAttemptHotSwitch(input) {
-			key, _, signature, err := s.resolveRequestedTarget(operationCtx, input, true)
-			if err == nil {
-				s.mu.RLock()
-				catalogTarget, available := s.runtimeCatalog[key]
-				s.mu.RUnlock()
-				if available && catalogTarget.Signature == signature {
-					return s.hotSwitch(operationCtx, catalogTarget)
-				}
+			if catalogTarget, available := s.hotSwitchTarget(operationCtx, input); available {
+				return s.hotSwitch(operationCtx, catalogTarget)
 			}
 		}
 		return s.applyFull(operationCtx, input)
 	})
+}
+
+func (s *Service) hotSwitchTarget(ctx context.Context, input ApplyInput) (runtimeCatalogTarget, bool) {
+	// The running catalog was DNS-validated when it was built. A hot switch
+	// only needs to confirm that the persisted target still has the same
+	// signature; repeating external DNS resolution here makes an otherwise
+	// local selector change depend on the currently selected proxy path.
+	key, _, signature, err := s.resolveRequestedTarget(ctx, input, false)
+	if err != nil {
+		return runtimeCatalogTarget{}, false
+	}
+	s.mu.RLock()
+	target, available := s.runtimeCatalog[key]
+	s.mu.RUnlock()
+	return target, available && target.Signature == signature
 }
 
 func (s *Service) SetAllowLan(ctx context.Context, allowLan bool) (Runtime, error) {
@@ -297,7 +307,8 @@ func (s *Service) applyFull(ctx context.Context, input ApplyInput) (Runtime, err
 	}
 
 	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	if s.supervisor.Snapshot().State == supervisor.StateRunning {
+	supervisorState := s.supervisor.Snapshot().State
+	if supervisorState == supervisor.StateRunning || supervisorState == supervisor.StateStarting {
 		s.markControlledStop()
 		_, err = s.supervisor.Stop(stopCtx)
 	}
@@ -452,10 +463,19 @@ func (s *Service) buildRuntimeCatalog(ctx context.Context, input ApplyInput, rou
 	}
 
 	nodeTargets := make([]singbox.RuntimeNodeTarget, 0)
-	targets := make(map[string]runtimeCatalogTarget)
+	targets := map[string]runtimeCatalogTarget{
+		directTargetKey(): {
+			Tag: "direct", Signature: directTargetKey(),
+			Runtime: Runtime{TargetType: "direct"},
+		},
+	}
 	nodeTags := make(map[string]string)
 	namesByTag := make(map[string]string)
-	for _, subscriptionView := range s.subscriptions.List() {
+	var subscriptionViews []subscription.View
+	if s.subscriptions != nil {
+		subscriptionViews = s.subscriptions.List()
+	}
+	for _, subscriptionView := range subscriptionViews {
 		nodes, probeErr := s.subscriptions.ProbeNodes(subscriptionView.ID, nil)
 		if probeErr != nil {
 			continue
@@ -478,7 +498,7 @@ func (s *Service) buildRuntimeCatalog(ctx context.Context, input ApplyInput, rou
 			}
 		}
 	}
-	if len(nodeTargets) == 0 {
+	if len(nodeTargets) == 0 && selectedKey != directTargetKey() {
 		return runtimeCatalogBuild{}, fmt.Errorf("no valid runtime nodes are available")
 	}
 
@@ -644,6 +664,12 @@ func (s *Service) buildRuntimeCatalog(ctx context.Context, input ApplyInput, rou
 }
 
 func (s *Service) resolveRequestedTarget(ctx context.Context, input ApplyInput, validateProbeURLs bool) (string, Runtime, string, error) {
+	if input.Direct {
+		if input.ChainID != "" || input.PoolID != "" || input.SubscriptionID != "" || input.NodeID != "" {
+			return "", Runtime{}, "", fmt.Errorf("direct cannot be combined with another runtime target")
+		}
+		return directTargetKey(), Runtime{TargetType: "direct"}, directTargetKey(), nil
+	}
 	if input.ChainID != "" {
 		if input.PoolID != "" || input.SubscriptionID != "" || input.NodeID != "" {
 			return "", Runtime{}, "", fmt.Errorf("chainId cannot be combined with another runtime target")
@@ -720,8 +746,12 @@ func nodeTargetKey(subscriptionID, nodeID string) string {
 }
 func poolTargetKey(poolID string) string   { return "pool\x00" + poolID }
 func chainTargetKey(chainID string) string { return "chain\x00" + chainID }
+func directTargetKey() string              { return "direct" }
 
 func currentTargetKey(runtime Runtime) string {
+	if runtime.TargetType == "direct" {
+		return directTargetKey()
+	}
 	if runtime.TargetType == "pool" {
 		return poolTargetKey(runtime.PoolID)
 	}
@@ -766,7 +796,9 @@ func (s *Service) ReapplyRules(ctx context.Context) (Runtime, error) {
 		return runtime, nil
 	}
 	input := ApplyInput{Mode: runtime.Mode, AllowLan: runtime.AllowLan}
-	if runtime.TargetType == "pool" {
+	if runtime.TargetType == "direct" {
+		input.Direct = true
+	} else if runtime.TargetType == "pool" {
 		input.PoolID = runtime.PoolID
 	} else if runtime.TargetType == "chain" {
 		input.ChainID = runtime.ChainID
@@ -964,6 +996,9 @@ func reserveHealthController() (string, string, error) {
 }
 
 func firstTargetID(runtime Runtime) string {
+	if runtime.TargetType == "direct" {
+		return directTargetKey()
+	}
 	if runtime.ChainID != "" {
 		return runtime.ChainID
 	}

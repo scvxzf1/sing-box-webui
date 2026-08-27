@@ -221,6 +221,18 @@ describe('ConnectionView', () => {
     expect(api.applyRuntime.mock.calls[0]?.[0]).toEqual({ chainId: 'chain-1', mode: 'tun', allowLan: false })
   })
 
+  it('applies a direct runtime target', async () => {
+    api.applyRuntime.mockResolvedValue({})
+    const user = userEvent.setup()
+    renderConnectionView()
+
+    await user.click(await screen.findByRole('button', { name: '直连' }))
+    expect(screen.getAllByText('直连').length).toBeGreaterThan(0)
+    await user.click(screen.getByRole('button', { name: '开启' }))
+
+    expect(api.applyRuntime.mock.calls[0]?.[0]).toEqual({ direct: true, mode: 'tun', allowLan: false })
+  })
+
   it('reorders layout items by dragging and persists the repaired order', async () => {
     window.localStorage.setItem('sing-box-webui:connection-layout-order-v1', JSON.stringify(['target', 'unknown', 'target']))
     const firstRender = renderConnectionView()

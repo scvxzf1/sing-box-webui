@@ -1615,6 +1615,10 @@ textarea:focus {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.connection-step .connection-target-control {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .connection-step .segmented-control button {
   min-width: 0;
   padding-right: 8px;

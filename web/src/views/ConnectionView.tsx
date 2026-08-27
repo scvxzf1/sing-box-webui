@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties, type DragEvent, type KeyboardEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Activity, ArrowRight, ArrowRightLeft, CircleStop, GitBranch, GripVertical, Layers3, ListTree, Network, Play, RotateCcw, Shield, TriangleAlert } from 'lucide-react'
+import { Activity, ArrowRight, ArrowRightLeft, Cable, CircleStop, GitBranch, GripVertical, Layers3, ListTree, Network, Play, RotateCcw, Shield, TriangleAlert } from 'lucide-react'
 import {
   applyRuntime,
   getRuntime,
@@ -18,7 +18,7 @@ import { QuickTest } from './QuickTest'
 import { NodeDiagnostic } from './NodeDiagnostic'
 
 type Mode = ApplyRuntime['mode']
-type TargetType = 'node' | 'pool' | 'chain'
+type TargetType = 'node' | 'pool' | 'chain' | 'direct'
 type ConnectionLayoutItemID = 'target' | 'selection' | 'mode' | 'lan' | 'quality' | 'exit' | 'quick'
 
 const targetTypeStorageKey = 'sing-box-webui:connection-target-type'
@@ -120,9 +120,11 @@ export function ConnectionView() {
     ? Boolean(selectedNode)
     : targetType === 'pool'
       ? Boolean(selectedPool && selectedPool.availableCount >= 2)
-      : Boolean(selectedChain?.available)
+      : targetType === 'chain'
+        ? Boolean(selectedChain?.available)
+        : true
   const canApply = Boolean(hasTarget && runtime?.capabilities.singBox.available && capability?.available && !applyMutation.isPending)
-  const targetLabel = targetType === 'node' ? selectedNode?.name : targetType === 'pool' ? selectedPool?.name : selectedChain?.name
+  const targetLabel = targetType === 'node' ? selectedNode?.name : targetType === 'pool' ? selectedPool?.name : targetType === 'chain' ? selectedChain?.name : '直连'
   const activePoolHealth = runtime?.state === 'running' && runtime.poolId === selectedPool?.id ? runtime.poolHealth : undefined
   const selectedPoolMemberHealth = activePoolHealth?.members.find((member) => member.nodeId === activePoolHealth.selectedNodeId)
   const isRunning = runtime?.state === 'running'
@@ -134,7 +136,9 @@ export function ConnectionView() {
     : targetType === 'chain' && selectedChain?.entryType === 'pool'
       ? `正在检测 ${selectedChain.entryMemberCount ?? 0} 条链路…`
       : isRunning ? '正在切换…' : '正在开启…'
-  const isActiveTarget = targetType === 'pool'
+  const isActiveTarget = targetType === 'direct'
+    ? runtime?.targetType === 'direct'
+    : targetType === 'pool'
     ? Boolean(selectedPool && runtime?.targetType === 'pool' && runtime.poolId === selectedPool.id)
     : targetType === 'chain'
       ? Boolean(selectedChain && runtime?.targetType === 'chain' && runtime.chainId === selectedChain.id)
@@ -147,6 +151,10 @@ export function ConnectionView() {
     }
     if (targetType === 'chain') {
       if (selectedChain) applyMutation.mutate({ chainId: selectedChain.id, mode, allowLan })
+      return
+    }
+    if (targetType === 'direct') {
+      applyMutation.mutate({ direct: true, mode, allowLan })
       return
     }
     if (selectedNode) applyMutation.mutate({ subscriptionId, nodeId: selectedNode.id, mode, allowLan })
@@ -246,7 +254,7 @@ export function ConnectionView() {
         action={
           <div className="page-heading-actions">
             <span className={`runtime-badge runtime-badge--${runtime?.state ?? 'stopped'}`}>
-              {runtime?.state === 'running' ? '代理运行中' : runtime?.state === 'failed' ? '运行失败' : '代理已停止'}
+              {runtime?.state === 'running' ? (runtime.targetType === 'direct' ? '直连运行中' : '代理运行中') : runtime?.state === 'failed' ? '运行失败' : '代理已停止'}
             </span>
             <button
               className="icon-button"
@@ -330,8 +338,11 @@ export function ConnectionView() {
                 <button className={targetType === 'node' ? 'segmented-control--active' : ''} type="button" onClick={() => setTargetType('node')}><ListTree size={16} />单节点</button>
                 <button className={targetType === 'pool' ? 'segmented-control--active' : ''} type="button" onClick={() => setTargetType('pool')}><Layers3 size={16} />节点池</button>
                 <button className={targetType === 'chain' ? 'segmented-control--active' : ''} type="button" onClick={() => setTargetType('chain')}><GitBranch size={16} />链式代理</button>
+                <button className={targetType === 'direct' ? 'segmented-control--active' : ''} type="button" onClick={() => setTargetType('direct')}><Cable size={16} />直连</button>
               </div>
-              {targetType === 'node' ? (
+              {targetType === 'direct' ? (
+                <div className="selected-node-line"><strong>直连</strong><span>不经过代理节点</span></div>
+              ) : targetType === 'node' ? (
                 <select aria-label="选择订阅" value={subscriptionId} onChange={(event) => setSubscriptionId(event.target.value)}>
                   {(subscriptionsQuery.data ?? []).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                 </select>
@@ -351,8 +362,10 @@ export function ConnectionView() {
             {layoutHandle('selection')}
             <span className="step-index">{stepNumber('selection')}</span>
             <div>
-              <h2>{targetType === 'node' ? '使用节点' : targetType === 'pool' ? '池状态' : '链路状态'}</h2>
-              {targetType === 'node' && selectedNode ? (
+              <h2>{targetType === 'node' ? '使用节点' : targetType === 'pool' ? '池状态' : targetType === 'chain' ? '链路状态' : '连接状态'}</h2>
+              {targetType === 'direct' ? (
+                <div className="selected-node-line"><strong>直连</strong><span>当前流量将直接访问目标地址</span></div>
+              ) : targetType === 'node' && selectedNode ? (
                 <div className="selected-node-line">
                   <strong>{selectedNode.name}</strong>
                   <span>{selectedNode.type} · {selectedNode.server}:{selectedNode.port}</span>
@@ -473,7 +486,7 @@ function formatHealthState(state: 'unknown' | 'healthy' | 'degraded' | 'outage')
 
 function readStoredTargetType(): TargetType {
   const value = window.localStorage.getItem(targetTypeStorageKey)
-  return value === 'pool' || value === 'chain' ? value : 'node'
+  return value === 'pool' || value === 'chain' || value === 'direct' ? value : 'node'
 }
 
 function readStoredSubscriptionId() {

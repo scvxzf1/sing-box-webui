@@ -9,26 +9,26 @@ System browser
     |
     | HTTP on explicit loopback origin
     v
+Frontend server
+    |-- Vite in development, read-only nginx in production
+    |-- proxies only local API paths
+    v
 Web/API process (ordinary user)
-    |-- serves API and, in production, built frontend assets
     |-- owns browser sessions and SSE fan-out
     |-- never owns CAP_NET_ADMIN
-    |
-    | typed local IPC when privileged mode is enabled
-    v
-Core/Helper boundary
-    |-- owns the sing-box supervisor in privileged mode
-    |-- exposes only capability-oriented operations
+    |-- validates config and supervises one fixed sing-box executable
     v
 external sing-box process
+    |-- ordinary process in system-proxy mode
+    |-- only its resolved version file may hold CAP_NET_ADMIN in TUN mode
 ```
 
 默认运行时由 Core Manager 从 Go 内嵌资源释放 sing-box，并通过受管版本入口交给
 supervisor。sing-box 仍是独立子进程，不作为 Go library 链接到 Web/API 进程。
 
 开发模式下，浏览器先访问 Vite，Vite 只把 `/api` 代理到 Go；SSE 也位于
-`/api/v1` 下。生产静态
-资源服务属于未来构建阶段，不要求 Node.js 常驻。
+`/api/v1` 下。生产模式由只读 nginx 提供构建后的静态资源并反向代理 API，不要求
+Node.js 常驻。
 
 ## 2. 信任边界
 
@@ -43,14 +43,17 @@ Web/API 进程以当前桌面用户运行，只能写自己的 XDG 目录。它�
 状态、管理浏览器会话并转发经过验证的 Core 命令，但不能直接修改全局路由、DNS、
 防火墙或 TUN。
 
-### 2.3 Core/Helper
+### 2.3 TUN 特权边界
 
-Core/Helper 不是“另一个通用后端”。它的 API 必须围绕少量能力设计，例如应用一份
-已验证配置或请求一个明确的状态转换。它不得接受 shell 字符串、任意 argv、任意
-文件路径或任意网络规则。
+当前 Linux 实现不使用常驻特权 Helper。Web/API 拒绝以 root 运行，也不持有文件能力；
+TUN 模式只给解析符号链接后得到的实际 sing-box 版本文件授予 `CAP_NET_ADMIN`。
+supervisor 使用固定 argv 和后端生成、验证过的配置启动该文件，不接受 HTTP 提供的
+shell、任意 argv 或任意配置路径。systemd-resolved 集成另由绑定本机活动用户、仅包含
+四个明确 action 的 Polkit 规则授权。
 
-如果首期只运行普通代理模式，Core 可以使用非特权实现。启用 TUN 前必须替换为通过
-安全 ADR 审核的 Linux 实现。
+完整决策及其限制见 [ADR-0001](adr/0001-linux-tun-privilege.md)。未来若权限范围扩大到
+无法由单个文件 capability 表达的操作，必须通过新 ADR 引入参数受限的 Helper/IPC，
+不能提升 Web/API 权限。
 
 ## 3. 后端模块边界
 
@@ -117,7 +120,10 @@ supervisor 是 sing-box 生命周期的唯一写入者。所有命令进入单�
 4. 终止整个受管进程组，避免遗留子进程。
 5. 回收 stdout/stderr reader 并发布最终状态。
 
-崩溃重启必须有限次、带抖动退避。用户主动停止不会触发自动重启。
+核心意外退出后会在同一 generation 内使用最后已验证配置进行有限次数、带抖动退避的
+自动重启；重试期间保留系统代理，预算耗尽后才进入 `failed`、停止监控并恢复系统代理。
+具体预算、退避、稳定窗口和取消语义见已接受的
+[ADR-0004](adr/0004-crash-restart-policy.md)；用户主动停止不会进入崩溃恢复路径。
 
 ## 6. 配置事务与运行版本
 
