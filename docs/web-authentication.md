@@ -94,7 +94,7 @@
 
 ### 页面持续显示登录界面
 
-- 确认 Go API 已启动：`curl -fsS http://127.0.0.1:33334/healthz`。
+- 确认 Go API 已启动：`curl -fsS http://127.0.0.1:31334/healthz`。
 - 检查 `var/config.json` 是合法 JSON，且开启时 token 至少 8 个字符。
 - 修改配置后必须重启后端；Vite 热更新不会重新加载 Go 配置。
 - 服务重启后旧 Cookie 必然失效，需要重新登录。
@@ -116,10 +116,10 @@
 
 ```bash
 # 健康检查保持公开
-curl -i http://127.0.0.1:33334/healthz
+curl -i http://127.0.0.1:31334/healthz
 
 # 鉴权开启且无 Cookie 时应返回 401
-curl -i http://127.0.0.1:33334/api/v1/session
+curl -i http://127.0.0.1:31334/api/v1/session
 
 # 配置文件只允许当前用户读写
 stat -c '%a %n' var/config.json

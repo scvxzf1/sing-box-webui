@@ -29,9 +29,9 @@ func TestDisabledWebAuthenticationConfiguresUnauthenticatedServer(t *testing.T) 
 func TestChannelReservedPortsIncludeApplicationListeners(t *testing.T) {
 	t.Parallel()
 	ports := channelReservedPorts(application.Config{
-		Address: "127.0.0.1:33334", DevOrigin: "http://127.0.0.1:33333", MixedPort: 2080,
+		Address: "127.0.0.1:31334", DevOrigin: "http://127.0.0.1:31333", MixedPort: 2080,
 	})
-	want := []uint16{2080, 33334, 33333}
+	want := []uint16{2080, 31334, 31333}
 	if len(ports) != len(want) {
 		t.Fatalf("reserved ports = %v, want %v", ports, want)
 	}

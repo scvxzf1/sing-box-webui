@@ -2,13 +2,14 @@ import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
 const apiTarget =
-  process.env.SING_BOX_WEBUI_DEV_API ?? 'http://127.0.0.1:33334'
+  process.env.SING_BOX_WEBUI_DEV_API ?? 'http://127.0.0.1:31334'
+const devPort = Number(process.env.SING_BOX_WEBUI_DEV_PORT ?? '31333')
 
 export default defineConfig({
   plugins: [react()],
   server: {
     host: '127.0.0.1',
-    port: 33333,
+    port: devPort,
     strictPort: true,
     proxy: {
       '/api': {

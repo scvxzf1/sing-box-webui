@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	DefaultAddress    = "127.0.0.1:33334"
-	DefaultDevOrigin  = "http://127.0.0.1:33333"
+	DefaultAddress    = "127.0.0.1:31334"
+	DefaultDevOrigin  = "http://127.0.0.1:31333"
 	DefaultMixedPort  = 2080
 	DefaultTUNAddress = "198.20.0.1/30"
 )

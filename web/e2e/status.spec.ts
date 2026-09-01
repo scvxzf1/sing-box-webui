@@ -6,7 +6,7 @@ test('shows the local control-plane status', async ({ page }) => {
   await expect(page).toHaveTitle('sing-box WebUI · 本机代理控制面')
   await expect(page.getByRole('heading', { name: '运行概览' })).toBeVisible()
   await expect(page.getByText('Web API')).toBeVisible()
-  await expect(page.getByText('127.0.0.1:33334').first()).toBeVisible()
+  await expect(page.getByText('127.0.0.1:31334').first()).toBeVisible()
 })
 
 test('switches and persists the dark theme without narrow-screen overflow', async ({ page }) => {

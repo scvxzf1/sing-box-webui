@@ -288,7 +288,7 @@ func TestProbeFailsOnRefusedConnection(t *testing.T) {
 
 func TestProbeBlocksPrivateTargets(t *testing.T) {
 	t.Parallel()
-	result := probe(context.Background(), "http://127.0.0.1:33334/healthz", "", false)
+	result := probe(context.Background(), "http://127.0.0.1:31334/healthz", "", false)
 	if result.Status != StatusFailed || result.Detail != "目标地址不可访问" {
 		t.Fatalf("private target result = %+v", result)
 	}

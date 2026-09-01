@@ -12,6 +12,12 @@ CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
 SERVICE_DIR="${CONFIG_HOME}/systemd/user"
 SERVICE_PATH="${SERVICE_DIR}/${SERVICE_NAME}"
 START_NOW=true
+DEV_PORT="${SING_BOX_WEBUI_DEV_PORT:-31333}"
+
+if [[ ! "${DEV_PORT}" =~ ^[1-9][0-9]{0,4}$ ]] || (( DEV_PORT > 65535 )); then
+  printf 'error: SING_BOX_WEBUI_DEV_PORT must be between 1 and 65535\n' >&2
+  exit 1
+fi
 
 case "${1:-}" in
   '') ;;
@@ -102,6 +108,8 @@ Type=simple
 WorkingDirectory=${ROOT_DIR}
 Environment="PATH=${SERVICE_PATH_VALUE}"
 Environment=SING_BOX_WEBUI_ENABLE_TUN=1
+Environment=SING_BOX_WEBUI_DEV_PORT=${DEV_PORT}
+Environment=SING_BOX_WEBUI_ADDR=127.0.0.1:31334
 ExecStart=${ROOT_DIR}/scripts/dev-tun.sh
 Restart=on-failure
 RestartSec=5s

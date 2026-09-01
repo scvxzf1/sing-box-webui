@@ -4,7 +4,7 @@ info:
   version: 0.1.0
   description: Local loopback API for the sing-box WebUI control plane.
 servers:
-  - url: http://127.0.0.1:33334
+  - url: http://127.0.0.1:31334
 paths:
   /healthz:
     get:

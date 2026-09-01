@@ -79,7 +79,7 @@ function AuthenticatedApp({ onLogout }: { onLogout: () => void }) {
         <div className="topbar-actions">
           <div className="endpoint">
             <span className="status-dot status-dot--ok" aria-hidden="true" />
-            127.0.0.1:33334
+            127.0.0.1:31334
           </div>
           <ThemeToggle />
           <button className="icon-button" type="button" title="退出登录" aria-label="退出登录" onClick={() => void signOut()}><LogOut size={16} /></button>

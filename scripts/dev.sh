@@ -7,8 +7,14 @@ if [[ "${EUID}" -eq 0 ]]; then
 fi
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-export SING_BOX_WEBUI_ADDR="${SING_BOX_WEBUI_ADDR:-127.0.0.1:33334}"
-export SING_BOX_WEBUI_DEV_ORIGIN="${SING_BOX_WEBUI_DEV_ORIGIN:-http://127.0.0.1:33333}"
+DEV_PORT="${SING_BOX_WEBUI_DEV_PORT:-31333}"
+if [[ ! "${DEV_PORT}" =~ ^[1-9][0-9]{0,4}$ ]] || (( DEV_PORT > 65535 )); then
+  printf 'error: SING_BOX_WEBUI_DEV_PORT must be between 1 and 65535\n' >&2
+  exit 1
+fi
+export SING_BOX_WEBUI_DEV_PORT="${DEV_PORT}"
+export SING_BOX_WEBUI_ADDR="${SING_BOX_WEBUI_ADDR:-127.0.0.1:31334}"
+export SING_BOX_WEBUI_DEV_ORIGIN="${SING_BOX_WEBUI_DEV_ORIGIN:-http://127.0.0.1:${SING_BOX_WEBUI_DEV_PORT}}"
 export SING_BOX_WEBUI_DEV_API="${SING_BOX_WEBUI_DEV_API:-http://${SING_BOX_WEBUI_ADDR}}"
 
 for command in curl go npm setsid; do
@@ -39,7 +45,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 printf 'Go API: http://%s\n' "${SING_BOX_WEBUI_ADDR}"
-printf 'WebUI:  http://127.0.0.1:33333\n'
+printf 'WebUI:  http://127.0.0.1:%s\n' "${SING_BOX_WEBUI_DEV_PORT}"
 
 (
   cd "${ROOT_DIR}"

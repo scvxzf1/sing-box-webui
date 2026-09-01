@@ -44,18 +44,18 @@ monorepo。
 目标端口：
 
 ```text
-Vite:  127.0.0.1:33333
-Go:    127.0.0.1:33334
+Vite:  127.0.0.1:31333
+Go:    127.0.0.1:31334
 ```
 
 Vite 只代理：
 
 ```text
-/api     -> http://127.0.0.1:33334
-/healthz -> http://127.0.0.1:33334
+/api     -> http://127.0.0.1:31334
+/healthz -> http://127.0.0.1:31334
 ```
 
-`/api` 的代理目标同样是 `http://127.0.0.1:33334`。SSE 端点使用 `/api/v1`
+`/api` 的代理目标同样是 `http://127.0.0.1:31334`。SSE 端点使用 `/api/v1`
 前缀，因此不需要第二条事件代理规则。`/healthz` 是用于开发验收的唯一额外代理。
 
 禁止配置任意路径代理或 `host: true`。Go 开发模式只允许精确的 Vite origin，不能用
@@ -80,7 +80,8 @@ npm --prefix web run dev
 默认开发配置写入仓库的 `var/`，该目录必须加入 `.gitignore`。建议环境变量：
 
 ```text
-SING_BOX_WEBUI_ADDR=127.0.0.1:33334
+SING_BOX_WEBUI_ADDR=127.0.0.1:31334
+SING_BOX_WEBUI_DEV_PORT=31333
 SING_BOX_WEBUI_DATA_DIR=./var/data
 SING_BOX_WEBUI_RUNTIME_DIR=./var/run
 SING_BOX_WEBUI_LOG_LEVEL=debug

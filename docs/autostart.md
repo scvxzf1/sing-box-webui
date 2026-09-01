@@ -49,4 +49,4 @@ systemctl --user restart sing-box-webui-dev.service
 systemctl --user disable --now sing-box-webui-dev.service
 ```
 
-默认端口仍为 WebUI `127.0.0.1:33333` 和 API `127.0.0.1:33334`。Node 版本或仓库路径变化后，重新运行安装脚本即可刷新单元中的环境和路径。
+默认端口为 WebUI `127.0.0.1:31333` 和 API `127.0.0.1:31334`。安装脚本会把两个端口显式写入服务单元；Node 版本、仓库路径或端口变化后，重新运行安装脚本即可刷新单元。
